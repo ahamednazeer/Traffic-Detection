@@ -1,0 +1,296 @@
+"""
+Detection API Routes
+"""
+import cv2
+import numpy as np
+import tempfile
+import os
+import base64
+from typing import Optional
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from detectors import YOLODetector, SSDDetector, BaseDetector
+from processors.image_processor import ImageProcessor
+from processors.video_processor import VideoProcessor
+from config.settings import CLASS_COLORS, CLASS_NAMES
+from utils.download import get_download_state
+
+
+router = APIRouter(prefix="/api", tags=["detection"])
+
+# Global detector instances
+_detectors = {
+    "yolo": None,
+    "ssd": None
+}
+_active_model = "yolo"
+
+
+class DetectionRequest(BaseModel):
+    confidence: float = 0.5
+    model: str = "yolo"  # yolo, ssd, or ensemble
+
+
+class ModelSelectRequest(BaseModel):
+    model: str  # yolo, ssd, or ensemble
+
+
+def get_detector(model_name: str) -> BaseDetector:
+    """Get or create a detector instance."""
+    global _detectors
+    
+    if model_name == "yolo":
+        if _detectors["yolo"] is None:
+            _detectors["yolo"] = YOLODetector()
+            _detectors["yolo"].load_model()
+        return _detectors["yolo"]
+    
+    elif model_name == "ssd":
+        if _detectors["ssd"] is None:
+            _detectors["ssd"] = SSDDetector()
+            _detectors["ssd"].load_model()
+        return _detectors["ssd"]
+    
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+
+def merge_detections(det1: list, det2: list, iou_threshold: float = 0.5) -> list:
+    """Merge detections from two models using NMS."""
+    if not det1:
+        return det2
+    if not det2:
+        return det1
+    
+    all_dets = det1 + det2
+    
+    # Simple NMS based on IoU
+    keep = []
+    used = set()
+    
+    # Sort by confidence
+    sorted_dets = sorted(enumerate(all_dets), key=lambda x: x[1]["confidence"], reverse=True)
+    
+    for idx, det in sorted_dets:
+        if idx in used:
+            continue
+        
+        keep.append(det)
+        used.add(idx)
+        
+        # Mark overlapping detections as used
+        for idx2, det2 in sorted_dets:
+            if idx2 in used:
+                continue
+            
+            # Calculate IoU
+            b1 = det["bbox"]
+            b2 = det2["bbox"]
+            
+            x1 = max(b1["x1"], b2["x1"])
+            y1 = max(b1["y1"], b2["y1"])
+            x2 = min(b1["x2"], b2["x2"])
+            y2 = min(b1["y2"], b2["y2"])
+            
+            inter = max(0, x2 - x1) * max(0, y2 - y1)
+            area1 = (b1["x2"] - b1["x1"]) * (b1["y2"] - b1["y1"])
+            area2 = (b2["x2"] - b2["x1"]) * (b2["y2"] - b2["y1"])
+            union = area1 + area2 - inter
+            
+            iou = inter / union if union > 0 else 0
+            
+            if iou > iou_threshold:
+                used.add(idx2)
+    
+    return keep
+
+
+@router.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "active_model": _active_model}
+
+
+@router.get("/download/status")
+async def download_status():
+    """Get current model download status."""
+    state = get_download_state()
+    return {
+        "is_downloading": state["is_downloading"],
+        "model_name": state["model_name"],
+        "progress": round(state["progress"], 1),
+        "total_size_mb": round(state["total_size"] / (1024 * 1024), 1) if state["total_size"] > 0 else 0,
+        "downloaded_mb": round(state["downloaded"] / (1024 * 1024), 1) if state["downloaded"] > 0 else 0,
+        "error": state["error"]
+    }
+
+
+@router.get("/models")
+async def list_models():
+    """List available models."""
+    return {
+        "models": [
+            {
+                "id": "yolo",
+                "name": "YOLO v11",
+                "description": "Fast and accurate object detection",
+                "loaded": _detectors["yolo"] is not None and _detectors["yolo"].is_loaded
+            },
+            {
+                "id": "ssd",
+                "name": "SSD300 (VGG16)",
+                "description": "Single Shot Detector with COCO pre-training",
+                "loaded": _detectors["ssd"] is not None and _detectors["ssd"].is_loaded
+            },
+            {
+                "id": "ensemble",
+                "name": "Ensemble (YOLO + SSD)",
+                "description": "Combined detection from both models",
+                "loaded": False
+            }
+        ],
+        "active": _active_model,
+        "class_names": CLASS_NAMES,
+        "class_colors": {k: f"rgb({v[2]},{v[1]},{v[0]})" for k, v in CLASS_COLORS.items()}
+    }
+
+
+@router.post("/models/select")
+async def select_model(request: ModelSelectRequest):
+    """Select the active model."""
+    global _active_model
+    
+    if request.model not in ["yolo", "ssd", "ensemble"]:
+        raise HTTPException(status_code=400, detail="Invalid model")
+    
+    _active_model = request.model
+    
+    # Pre-load the selected model(s)
+    if request.model in ["yolo", "ensemble"]:
+        get_detector("yolo")
+    if request.model in ["ssd", "ensemble"]:
+        get_detector("ssd")
+    
+    return {"status": "success", "active_model": _active_model}
+
+
+@router.post("/detect/image")
+async def detect_image(
+    file: UploadFile = File(...),
+    confidence: float = Form(0.5),
+    model: str = Form(None)
+):
+    """Detect objects in an uploaded image."""
+    try:
+        # Read image
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            raise HTTPException(status_code=400, detail="Invalid image file")
+        
+        # Use specified model or active model
+        model_to_use = model or _active_model
+        
+        if model_to_use == "ensemble":
+            # Run both detectors
+            yolo_detector = get_detector("yolo")
+            ssd_detector = get_detector("ssd")
+            
+            _, yolo_dets = ImageProcessor.process_image(image, yolo_detector, confidence, draw_boxes=False)
+            _, ssd_dets = ImageProcessor.process_image(image, ssd_detector, confidence, draw_boxes=False)
+            
+            # Merge detections
+            detections = merge_detections(yolo_dets, ssd_dets)
+            
+            # Draw merged detections
+            from detectors.base_detector import Detection
+            det_objects = [
+                Detection(
+                    class_name=d["class"],
+                    confidence=d["confidence"],
+                    bbox=(d["bbox"]["x1"], d["bbox"]["y1"], d["bbox"]["x2"], d["bbox"]["y2"]),
+                    class_id=d["class_id"]
+                )
+                for d in detections
+            ]
+            annotated = ImageProcessor.draw_detections(image, det_objects)
+        else:
+            detector = get_detector(model_to_use)
+            annotated, detections = ImageProcessor.process_image(image, detector, confidence)
+        
+        # Calculate statistics
+        stats = ImageProcessor.calculate_statistics(detections)
+        
+        # Encode annotated image
+        annotated_base64 = ImageProcessor.encode_image_to_base64(annotated)
+        
+        return {
+            "success": True,
+            "model_used": model_to_use,
+            "annotated_image": annotated_base64,
+            "detections": detections,
+            "statistics": stats
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/detect/video")
+async def detect_video(
+    file: UploadFile = File(...),
+    confidence: float = Form(0.5),
+    model: str = Form(None),
+    skip_frames: int = Form(0)
+):
+    """Process a video file for detection."""
+    try:
+        # Save uploaded video to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+            contents = await file.read()
+            tmp.write(contents)
+            video_path = tmp.name
+        
+        # Create temp output path
+        output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        
+        # Use specified model or active model
+        model_to_use = model or _active_model
+        
+        if model_to_use == "ensemble":
+            # For video, just use YOLO for speed (ensemble is too slow for video)
+            model_to_use = "yolo"
+        
+        detector = get_detector(model_to_use)
+        processor = VideoProcessor(detector)
+        
+        # Process video
+        result = processor.process_video_file(
+            video_path,
+            confidence_threshold=confidence,
+            output_path=output_path,
+            skip_frames=skip_frames
+        )
+        
+        # Read output video and encode
+        with open(output_path, "rb") as f:
+            video_data = base64.b64encode(f.read()).decode("utf-8")
+        
+        # Cleanup temp files
+        os.unlink(video_path)
+        os.unlink(output_path)
+        
+        return {
+            "success": True,
+            "model_used": model_to_use,
+            "video_base64": video_data,
+            "video_info": result["video_info"],
+            "statistics": result["statistics"]
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
