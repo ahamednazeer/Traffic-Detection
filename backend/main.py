@@ -13,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from config.settings import CORS_ORIGINS, API_PREFIX
 from routes.detection import router as detection_router
+from routes.camera import router as camera_router
+from routes.video import router as video_router
 
 
 # Create FastAPI app
@@ -35,6 +37,8 @@ app.add_middleware(
 
 # Include routers
 app.include_router(detection_router)
+app.include_router(camera_router)
+app.include_router(video_router)
 
 
 @app.get("/")

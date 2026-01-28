@@ -15,7 +15,6 @@ from detectors import YOLODetector, SSDDetector, BaseDetector
 from processors.image_processor import ImageProcessor
 from processors.video_processor import VideoProcessor
 from config.settings import CLASS_COLORS, CLASS_NAMES
-from utils.download import get_download_state
 
 
 router = APIRouter(prefix="/api", tags=["detection"])
@@ -111,20 +110,6 @@ def merge_detections(det1: list, det2: list, iou_threshold: float = 0.5) -> list
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "active_model": _active_model}
-
-
-@router.get("/download/status")
-async def download_status():
-    """Get current model download status."""
-    state = get_download_state()
-    return {
-        "is_downloading": state["is_downloading"],
-        "model_name": state["model_name"],
-        "progress": round(state["progress"], 1),
-        "total_size_mb": round(state["total_size"] / (1024 * 1024), 1) if state["total_size"] > 0 else 0,
-        "downloaded_mb": round(state["downloaded"] / (1024 * 1024), 1) if state["downloaded"] > 0 else 0,
-        "error": state["error"]
-    }
 
 
 @router.get("/models")

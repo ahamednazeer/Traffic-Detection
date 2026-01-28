@@ -4,6 +4,7 @@ Video Processing Utilities
 import cv2
 import numpy as np
 import tempfile
+import subprocess
 import os
 from typing import List, Dict, Any, Generator, Tuple
 from detectors.base_detector import BaseDetector
@@ -25,15 +26,6 @@ class VideoProcessor:
     ) -> Dict[str, Any]:
         """
         Process a video file and return detection results.
-        
-        Args:
-            video_path: Path to input video
-            confidence_threshold: Minimum detection confidence
-            output_path: Optional path for annotated output video
-            skip_frames: Number of frames to skip between detections
-            
-        Returns:
-            Dictionary with processing results and statistics
         """
         cap = cv2.VideoCapture(video_path)
         
@@ -41,17 +33,20 @@ class VideoProcessor:
             return {"error": "Could not open video file"}
         
         # Get video properties
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         duration = total_frames / fps if fps > 0 else 0
         
-        # Setup output video if requested
-        out = None
-        if output_path:
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        # Create temp file for raw output
+        temp_raw = tempfile.NamedTemporaryFile(delete=False, suffix=".avi")
+        temp_raw_path = temp_raw.name
+        temp_raw.close()
+        
+        # Use MJPG codec for temp file (more compatible)
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        out = cv2.VideoWriter(temp_raw_path, fourcc, fps, (width, height))
         
         all_detections = []
         frame_count = 0
@@ -66,8 +61,7 @@ class VideoProcessor:
             
             # Skip frames if requested
             if skip_frames > 0 and frame_count % (skip_frames + 1) != 0:
-                if out:
-                    out.write(frame)
+                out.write(frame)
                 continue
             
             # Process frame
@@ -77,13 +71,36 @@ class VideoProcessor:
             
             all_detections.extend(detections)
             processed_count += 1
-            
-            if out:
-                out.write(annotated)
+            out.write(annotated)
         
         cap.release()
-        if out:
-            out.release()
+        out.release()
+        
+        # Convert to H.264 using ffmpeg for browser compatibility
+        if output_path:
+            try:
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', temp_raw_path,
+                    '-c:v', 'libx264', '-preset', 'fast',
+                    '-crf', '23', '-pix_fmt', 'yuv420p',
+                    '-movflags', '+faststart',
+                    output_path
+                ], capture_output=True, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"FFmpeg error: {e.stderr.decode()}")
+                # Fallback: just copy the raw file
+                import shutil
+                shutil.copy(temp_raw_path, output_path)
+            except FileNotFoundError:
+                # ffmpeg not installed, use raw file
+                import shutil
+                shutil.copy(temp_raw_path, output_path)
+            
+            # Cleanup temp file
+            try:
+                os.unlink(temp_raw_path)
+            except:
+                pass
         
         # Calculate statistics
         stats = ImageProcessor.calculate_statistics(all_detections)
@@ -110,9 +127,6 @@ class VideoProcessor:
     ) -> Generator[Tuple[np.ndarray, List[Dict[str, Any]], float], None, None]:
         """
         Process video as a stream, yielding frames with detections.
-        
-        Yields:
-            Tuple of (annotated_frame, detections, progress)
         """
         cap = cv2.VideoCapture(video_path)
         
