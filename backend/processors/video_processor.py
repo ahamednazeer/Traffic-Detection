@@ -66,7 +66,7 @@ class VideoProcessor:
             
             # Process frame
             annotated, detections = ImageProcessor.process_image(
-                frame, self.detector, confidence_threshold
+                frame, self.detector, confidence_threshold, fps=fps
             )
             
             all_detections.extend(detections)
@@ -136,6 +136,8 @@ class VideoProcessor:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_count = 0
         
+        fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
+        
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -150,7 +152,7 @@ class VideoProcessor:
             
             # Process frame
             annotated, detections = ImageProcessor.process_image(
-                frame, self.detector, confidence_threshold
+                frame, self.detector, confidence_threshold, fps=fps
             )
             
             yield annotated, detections, progress

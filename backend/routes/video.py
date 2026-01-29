@@ -128,7 +128,7 @@ async def video_process_websocket(websocket: WebSocket):
             
             # Process frame
             annotated, detections = ImageProcessor.process_image(
-                frame, detector, confidence
+                frame, detector, confidence, fps=fps
             )
             
             all_detections.extend(detections)

@@ -1,0 +1,28 @@
+
+services:
+  backend:
+    image: ahamednazeer/traffic_detection:0.1-be
+    container_name: traffic_detection_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      # Exclude dependencies to avoid conflicts
+      - /app/__pycache__
+    environment:
+      - PORT=8000
+    restart: unless-stopped
+
+  frontend:
+    image: ahamednazeer/traffic_detection:0.1-fe
+    container_name: traffic_detection_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      # Ensure frontend knows where backend is (browser side needs public URL, server side needs container URL)
+      # For client-side list requests
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
