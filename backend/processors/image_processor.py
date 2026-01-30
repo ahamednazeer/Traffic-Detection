@@ -3,202 +3,99 @@ Image Processing Utilities
 """
 import cv2
 import numpy as np
+import base64
 from typing import List, Tuple, Dict
-import math
-from collections import deque
 
 from detectors.base_detector import BaseDetector, Detection
-from utils.tracker import Tracker
 
 
 class ImageProcessor:
     """Handles image processing and annotation."""
-    
-    _tracker = Tracker(max_disappeared=20, max_distance=100)
-    # Store smoothed speed history: {id: deque(maxlen=5)}
-    _speed_history: Dict[int, deque] = {} 
-    
-    # Class-based max speed limits (km/h) to filter noise
-    MAX_SPEEDS = {
-        "Person": 30,
-        "Pedestrian": 20,
-        "Cyclist": 45,
-        "Person_sitting": 5,
-        "Car": 200,
-        "Truck": 160,
-        "Bus": 140,
-        "Motorcycle": 220
-    }
-    
-    @staticmethod
-    def get_ppm(y_coord: int, height: int) -> float:
-        """
-        Calculate dynamic Pixels Per Meter based on Y-coordinate (Depth).
-        Assuming camera is looking down a road:
-        - Bottom of frame (close): More pixels per meter
-        - Top of frame (far): Fewer pixels per meter
-        """
-        # Simple linear interpolation calibration
-        # Bottom of screen (y=height): ~100 PPM (close)
-        # Top of road (y=height/2): ~10 PPM (far)
-        
-        # Normalize Y [0.0 to 1.0] from horizon line
-        horizon = height * 0.3
-        if y_coord < horizon:
-            return 10.0 # Too far/horizon
-            
-        ratio = (y_coord - horizon) / (height - horizon)
-        
-        # PPM ranges from 15 (midscreen) to 140 (bottom) - Increased base values to lower speed est
-        ppm = 15.0 + (ratio * 125.0)
-        return max(10.0, ppm)
 
     @staticmethod
     def process_image(
         image: np.ndarray,
         detector: BaseDetector,
         confidence_threshold: float = 0.5,
-        fps: float = 30.0
+        draw_boxes: bool = True
     ) -> Tuple[np.ndarray, List[Dict]]:
         """
-        Process an image: detect objects, track them, estimate speed, and annotate.
-        """
-        height, width = image.shape[:2]
+        Process an image: detect objects and annotate.
         
+        Args:
+            image: Input image
+            detector: The detector to use
+            confidence_threshold: Minimum confidence for detections
+            draw_boxes: Whether to draw annotations on the output image
+        """
         # Run detection
         detections = detector.detect(image, confidence_threshold)
         
-        # Prepare rectangles for tracker
-        rects = []
-        for det in detections:
-            rects.append(det.bbox)
-            
-        # Update tracker
-        objects = ImageProcessor._tracker.update(rects)
-        
         # Convert detections to dictionary format
         detection_results = []
-        annotated_image = image.copy()
+        annotated_image = image.copy() if draw_boxes else image
         
-        # Map IDs to speeds
-        object_speed_map = {}
-        
-        for (object_id, centroid) in objects.items():
-            # Calculate speed
-            speed = ImageProcessor._calculate_speed(object_id, fps, height)
-            object_speed_map[object_id] = speed
-            
         # Draw annotations
         for det in detections:
             x1, y1, x2, y2 = det.bbox
-            
-            # Find object ID for this detection (closest centroid)
-            c_x = int((x1 + x2) / 2.0)
-            c_y = int((y1 + y2) / 2.0)
-            
-            # Match detection to tracker ID
-            matched_id = None
-            min_dist = float('inf')
-            
-            for obj_id, centroid in objects.items():
-                d = math.hypot(c_x - centroid[0], c_y - centroid[1])
-                if d < 100:  # Search radius
-                    if d < min_dist:
-                        min_dist = d
-                        matched_id = obj_id
-            
-            speed = 0.0
-            if matched_id is not None:
-                raw_speed = object_speed_map.get(matched_id, 0.0)
-                
-                # Apply class-specific limits
-                max_allowed = ImageProcessor.MAX_SPEEDS.get(det.class_name, 250)
-                speed = min(raw_speed, max_allowed)
 
-            # Draw bounding box
-            color = (0, 255, 0) # Green default
-            if speed > 80: color = (0, 0, 255) # Red for fast
-            elif speed > 50: color = (0, 165, 255) # Orange for medium
-            
-            cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, 2)
-            
-            # Label
-            label = f"{det.class_name} {det.confidence:.2f}"
-            if speed > 3:
-                label += f" | {int(speed)} km/h"
+            # Draw bounding box (only if draw_boxes is enabled)
+            if draw_boxes:
+                # Color scheme based on class
+                color = (0, 255, 0)  # Green default
                 
-            (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-            cv2.rectangle(annotated_image, (x1, y1 - 25), (x1 + w, y1), color, -1)
+                # Draw thicker bounding box
+                cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, 3)
+                
+                # Prepare label
+                label = f"{det.class_name} {det.confidence:.0%}"
+                
+                # Use larger font for better visibility
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.7
+                font_thickness = 2
+                
+                # Get text size
+                (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
+                
+                # Position label above box (or inside if at top edge)
+                label_y = y1 - 10 if y1 > 35 else y1 + text_h + 10
+                label_x = x1
+                
+                # Draw background rectangle with padding
+                padding = 5
+                bg_y1 = label_y - text_h - padding
+                bg_y2 = label_y + padding
+                bg_x1 = label_x - padding
+                bg_x2 = label_x + text_w + padding
+                
+                # Semi-transparent dark background
+                overlay = annotated_image.copy()
+                cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.7, annotated_image, 0.3, 0, annotated_image)
+                
+                # Draw colored border around label
+                cv2.rectangle(annotated_image, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 2)
+                
+                # Draw text with outline for better visibility
+                # Black outline
+                cv2.putText(annotated_image, label, (label_x, label_y), font, font_scale, (0, 0, 0), font_thickness + 2)
+                # White text
+                cv2.putText(annotated_image, label, (label_x, label_y), font, font_scale, (255, 255, 255), font_thickness)
             
-            cv2.putText(
-                annotated_image,
-                label,
-                (x1, y1 - 8),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                1
-            )
+            # Convert numpy types to native Python types for JSON serialization
+            bbox = det.bbox
+            if hasattr(bbox[0], 'item'):  # numpy type
+                bbox = tuple(int(x) for x in bbox)
             
             detection_results.append({
                 "class_name": det.class_name,
-                "confidence": det.confidence,
-                "bbox": det.bbox,
-                "class_id": det.class_id,
-                "track_id": matched_id,
-                "speed": speed
+                "confidence": float(det.confidence),
+                "bbox": bbox,
+                "class_id": int(det.class_id) if hasattr(det.class_id, 'item') else det.class_id
             })
             
         return annotated_image, detection_results
-
-    @staticmethod
-    def _calculate_speed(object_id: int, fps: float, height: int) -> float:
-        """
-        Estimate speed in km/h using variable PPM over 5-frame average.
-        """
-        history = ImageProcessor._tracker.history.get(object_id, [])
-        if len(history) < 3: # Need at least 3 points for smooth speed
-            return 0.0
-            
-        # Initialize deque if needed
-        if object_id not in ImageProcessor._speed_history:
-            ImageProcessor._speed_history[object_id] = deque(maxlen=8)
-            
-        # Get movement between frames
-        # Use average of last 3 movements to reduce jitter
-        points = list(history)[-4:] # Get last 4 points
-        
-        speeds = []
-        for i in range(1, len(points)):
-            p1 = points[i-1]
-            p2 = points[i]
-            
-            # Pixel distance
-            d_pixels = math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
-            
-            # Dynamic PPM based on average Y position
-            avg_y = (p1[1] + p2[1]) / 2.0
-            ppm = ImageProcessor.get_ppm(avg_y, height)
-            
-            # Convert to meters
-            d_meters = d_pixels / ppm
-            
-            # Speed in km/h
-            frame_speed = (d_meters * fps) * 3.6
-            speeds.append(frame_speed)
-            
-        if not speeds:
-            return 0.0
-            
-        # Current instant speed (avg of last few frames)
-        current_speed = sum(speeds) / len(speeds)
-        
-        # Add to long-term history
-        ImageProcessor._speed_history[object_id].append(current_speed)
-        
-        # Return rolling average speed
-        avg_speed = sum(ImageProcessor._speed_history[object_id]) / len(ImageProcessor._speed_history[object_id])
-        return avg_speed
 
     @staticmethod
     def calculate_statistics(detections: List[Dict]) -> Dict:
@@ -234,3 +131,25 @@ class ImageProcessor:
             "has_pedestrians": has_pedestrians,
             "has_vehicles": has_vehicles
         }
+
+    @staticmethod
+    def encode_image_to_base64(image: np.ndarray, format: str = ".jpg") -> str:
+        """
+        Encode an image to a base64 data URL.
+        
+        Args:
+            image: Input image as numpy array
+            format: Image format extension (e.g., '.jpg', '.png')
+            
+        Returns:
+            Base64 encoded data URL string
+        """
+        success, encoded = cv2.imencode(format, image)
+        if not success:
+            raise ValueError("Failed to encode image")
+        
+        base64_bytes = base64.b64encode(encoded)
+        base64_string = base64_bytes.decode('utf-8')
+        
+        mime_type = "image/jpeg" if format == ".jpg" else "image/png"
+        return f"data:{mime_type};base64,{base64_string}"

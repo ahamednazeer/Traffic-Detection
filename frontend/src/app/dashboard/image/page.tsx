@@ -41,7 +41,11 @@ export default function ImageDetectionPage() {
 
         try {
             const result = await api.detectImage(selectedFile, confidence);
-            setResultImage(`data:image/jpeg;base64,${result.annotated_image}`);
+            // Handle both formats: raw base64 or full data URL
+            const imageData = result.annotated_image.startsWith('data:')
+                ? result.annotated_image
+                : `data:image/jpeg;base64,${result.annotated_image}`;
+            setResultImage(imageData);
             setStats(result.statistics);
             setProcessingTime((performance.now() - startTime) / 1000);
         } catch (err: any) {
@@ -64,7 +68,43 @@ export default function ImageDetectionPage() {
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Main Result Display - Full Width */}
+            {(resultImage || loading) && (
+                <div className="card">
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider">
+                            Detection Result
+                        </h3>
+                        {resultImage && (
+                            <a
+                                href={resultImage}
+                                download="detection_result.jpg"
+                                className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                            >
+                                Download Image
+                            </a>
+                        )}
+                    </div>
+                    <div className="bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center min-h-[400px] max-h-[600px]">
+                        {loading ? (
+                            <div className="flex flex-col items-center gap-3">
+                                <ArrowsClockwise size={32} className="text-blue-400 animate-spin" />
+                                <span className="text-blue-400">Processing image...</span>
+                            </div>
+                        ) : resultImage ? (
+                            <img
+                                src={resultImage}
+                                alt="Detection Result"
+                                className="max-h-[600px] w-auto object-contain cursor-zoom-in"
+                                onClick={() => window.open(resultImage, '_blank')}
+                                title="Click to view full size"
+                            />
+                        ) : null}
+                    </div>
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 {/* Left Column - Controls */}
                 <div className="space-y-4">
                     <ModelSelector />
@@ -133,44 +173,30 @@ export default function ImageDetectionPage() {
                             {error}
                         </div>
                     )}
-
-                    {/* Stats */}
-                    <DetectionStatsPanel stats={stats} processingTime={processingTime} />
                 </div>
 
-                {/* Right Column - Images */}
-                <div className="lg:col-span-2 space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {/* Original */}
-                        <div className="card">
-                            <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
-                                Original Image
-                            </h3>
-                            <div className="aspect-video bg-slate-900 rounded-sm overflow-hidden flex items-center justify-center">
-                                {previewUrl ? (
-                                    <img src={previewUrl} alt="Original" className="max-h-full max-w-full object-contain" />
-                                ) : (
-                                    <p className="text-slate-600">No image selected</p>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* Result */}
-                        <div className="card">
-                            <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
-                                Detection Result
-                            </h3>
-                            <div className="aspect-video bg-slate-900 rounded-sm overflow-hidden flex items-center justify-center">
-                                {loading ? (
-                                    <div className="text-blue-400 animate-pulse">Processing...</div>
-                                ) : resultImage ? (
-                                    <img src={resultImage} alt="Result" className="max-h-full max-w-full object-contain" />
-                                ) : (
-                                    <p className="text-slate-600">Run detection to see results</p>
-                                )}
-                            </div>
+                {/* Middle - Original Image */}
+                <div className="lg:col-span-2">
+                    <div className="card h-full">
+                        <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
+                            Original Image
+                        </h3>
+                        <div className="aspect-video bg-slate-900 rounded-sm overflow-hidden flex items-center justify-center">
+                            {previewUrl ? (
+                                <img src={previewUrl} alt="Original" className="max-h-full max-w-full object-contain" />
+                            ) : (
+                                <div className="flex flex-col items-center gap-2 text-slate-600">
+                                    <Upload size={32} weight="duotone" />
+                                    <p>No image selected</p>
+                                </div>
+                            )}
                         </div>
                     </div>
+                </div>
+
+                {/* Right - Stats */}
+                <div>
+                    <DetectionStatsPanel stats={stats} processingTime={processingTime} />
                 </div>
             </div>
         </div>

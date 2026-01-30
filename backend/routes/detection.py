@@ -11,7 +11,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from detectors import YOLODetector, SSDDetector, BaseDetector
+from detectors import YOLODetector, YOLOCocoDetector, SSDDetector, BaseDetector
 from processors.image_processor import ImageProcessor
 from processors.video_processor import VideoProcessor
 from config.settings import CLASS_COLORS, CLASS_NAMES
@@ -22,18 +22,23 @@ router = APIRouter(prefix="/api", tags=["detection"])
 # Global detector instances
 _detectors = {
     "yolo": None,
+    "yolo11n": None,  # nano
+    "yolo11s": None,  # small
+    "yolo11m": None,  # medium
+    "yolo11l": None,  # large
+    "yolo11x": None,  # xlarge
     "ssd": None
 }
-_active_model = "yolo"
+_active_model = "yolo11x"  # Default to xlarge for best accuracy
 
 
 class DetectionRequest(BaseModel):
     confidence: float = 0.5
-    model: str = "yolo"  # yolo, ssd, or ensemble
+    model: str = "yolo11x"
 
 
 class ModelSelectRequest(BaseModel):
-    model: str  # yolo, ssd, or ensemble
+    model: str
 
 
 def get_detector(model_name: str) -> BaseDetector:
@@ -45,6 +50,36 @@ def get_detector(model_name: str) -> BaseDetector:
             _detectors["yolo"] = YOLODetector()
             _detectors["yolo"].load_model()
         return _detectors["yolo"]
+    
+    elif model_name == "yolo11n":
+        if _detectors["yolo11n"] is None:
+            _detectors["yolo11n"] = YOLOCocoDetector(model_size="n")
+            _detectors["yolo11n"].load_model()
+        return _detectors["yolo11n"]
+    
+    elif model_name == "yolo11s":
+        if _detectors["yolo11s"] is None:
+            _detectors["yolo11s"] = YOLOCocoDetector(model_size="s")
+            _detectors["yolo11s"].load_model()
+        return _detectors["yolo11s"]
+    
+    elif model_name == "yolo11m":
+        if _detectors["yolo11m"] is None:
+            _detectors["yolo11m"] = YOLOCocoDetector(model_size="m")
+            _detectors["yolo11m"].load_model()
+        return _detectors["yolo11m"]
+    
+    elif model_name == "yolo11l":
+        if _detectors["yolo11l"] is None:
+            _detectors["yolo11l"] = YOLOCocoDetector(model_size="l")
+            _detectors["yolo11l"].load_model()
+        return _detectors["yolo11l"]
+    
+    elif model_name == "yolo11x":
+        if _detectors["yolo11x"] is None:
+            _detectors["yolo11x"] = YOLOCocoDetector(model_size="x")
+            _detectors["yolo11x"].load_model()
+        return _detectors["yolo11x"]
     
     elif model_name == "ssd":
         if _detectors["ssd"] is None:
@@ -119,20 +154,58 @@ async def list_models():
         "models": [
             {
                 "id": "yolo",
-                "name": "YOLO v11",
-                "description": "Fast and accurate object detection",
+                "name": "YOLO (Custom)",
+                "description": "Custom-trained for traffic (8 classes)",
+                "size": "~25MB",
                 "loaded": _detectors["yolo"] is not None and _detectors["yolo"].is_loaded
             },
             {
+                "id": "yolo11n",
+                "name": "YOLO11 Nano",
+                "description": "Fastest, basic accuracy",
+                "size": "~5MB",
+                "loaded": _detectors["yolo11n"] is not None and _detectors["yolo11n"].is_loaded
+            },
+            {
+                "id": "yolo11s",
+                "name": "YOLO11 Small",
+                "description": "Fast, good accuracy",
+                "size": "~18MB",
+                "loaded": _detectors["yolo11s"] is not None and _detectors["yolo11s"].is_loaded
+            },
+            {
+                "id": "yolo11m",
+                "name": "YOLO11 Medium",
+                "description": "Balanced speed/accuracy",
+                "size": "~40MB",
+                "loaded": _detectors["yolo11m"] is not None and _detectors["yolo11m"].is_loaded
+            },
+            {
+                "id": "yolo11l",
+                "name": "YOLO11 Large",
+                "description": "High accuracy",
+                "size": "~75MB",
+                "loaded": _detectors["yolo11l"] is not None and _detectors["yolo11l"].is_loaded
+            },
+            {
+                "id": "yolo11x",
+                "name": "YOLO11 XLarge",
+                "description": "Best accuracy (default)",
+                "size": "~140MB",
+                "loaded": _detectors["yolo11x"] is not None and _detectors["yolo11x"].is_loaded
+            },
+            {
                 "id": "ssd",
-                "name": "SSD300 (VGG16)",
-                "description": "Single Shot Detector with COCO pre-training",
+                "name": "SSD300",
+                "description": "VGG16 backbone, COCO",
+                "size": "~100MB",
                 "loaded": _detectors["ssd"] is not None and _detectors["ssd"].is_loaded
             },
             {
                 "id": "ensemble",
-                "name": "Ensemble (YOLO + SSD)",
-                "description": "Combined detection from both models",
+                "name": "Ensemble",
+                "description": "YOLO + SSD combined",
+                "size": "Multi",
                 "loaded": False
             }
         ],
@@ -147,16 +220,18 @@ async def select_model(request: ModelSelectRequest):
     """Select the active model."""
     global _active_model
     
-    if request.model not in ["yolo", "ssd", "ensemble"]:
-        raise HTTPException(status_code=400, detail="Invalid model")
+    valid_models = ["yolo", "yolo11n", "yolo11s", "yolo11m", "yolo11l", "yolo11x", "ssd", "ensemble"]
+    if request.model not in valid_models:
+        raise HTTPException(status_code=400, detail=f"Invalid model. Valid options: {valid_models}")
     
     _active_model = request.model
     
-    # Pre-load the selected model(s)
-    if request.model in ["yolo", "ensemble"]:
+    # Pre-load the selected model
+    if request.model == "ensemble":
         get_detector("yolo")
-    if request.model in ["ssd", "ensemble"]:
         get_detector("ssd")
+    elif request.model != "ensemble":
+        get_detector(request.model)
     
     return {"status": "success", "active_model": _active_model}
 

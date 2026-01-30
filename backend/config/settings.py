@@ -36,7 +36,8 @@ CLASS_COLORS = {
     "Truck": (255, 0, 255),
     "Misc": (0, 255, 255),
     "Tram": (128, 0, 128),
-    "Person_sitting": (255, 165, 0)
+    "Person_sitting": (255, 165, 0),
+    "Bus": (0, 128, 255),  # Orange-ish for buses
 }
 
 # SSD COCO class mapping (relevant traffic classes)
