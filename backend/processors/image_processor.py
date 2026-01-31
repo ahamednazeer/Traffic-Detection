@@ -21,81 +21,69 @@ class ImageProcessor:
     ) -> Tuple[np.ndarray, List[Dict]]:
         """
         Process an image: detect objects and annotate.
-        
-        Args:
-            image: Input image
-            detector: The detector to use
-            confidence_threshold: Minimum confidence for detections
-            draw_boxes: Whether to draw annotations on the output image
         """
         # Run detection
         detections = detector.detect(image, confidence_threshold)
         
-        # Convert detections to dictionary format
-        detection_results = []
-        annotated_image = image.copy() if draw_boxes else image
+        # Convert detections to dictionary format using the built-in to_dict
+        detection_results = [det.to_dict() for det in detections]
         
-        # Draw annotations
-        for det in detections:
-            x1, y1, x2, y2 = det.bbox
-
-            # Draw bounding box (only if draw_boxes is enabled)
-            if draw_boxes:
-                # Color scheme based on class
-                color = (0, 255, 0)  # Green default
-                
-                # Draw thicker bounding box
-                cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, 3)
-                
-                # Prepare label
-                label = f"{det.class_name} {det.confidence:.0%}"
-                
-                # Use larger font for better visibility
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.7
-                font_thickness = 2
-                
-                # Get text size
-                (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
-                
-                # Position label above box (or inside if at top edge)
-                label_y = y1 - 10 if y1 > 35 else y1 + text_h + 10
-                label_x = x1
-                
-                # Draw background rectangle with padding
-                padding = 5
-                bg_y1 = label_y - text_h - padding
-                bg_y2 = label_y + padding
-                bg_x1 = label_x - padding
-                bg_x2 = label_x + text_w + padding
-                
-                # Semi-transparent dark background
-                overlay = annotated_image.copy()
-                cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
-                cv2.addWeighted(overlay, 0.7, annotated_image, 0.3, 0, annotated_image)
-                
-                # Draw colored border around label
-                cv2.rectangle(annotated_image, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 2)
-                
-                # Draw text with outline for better visibility
-                # Black outline
-                cv2.putText(annotated_image, label, (label_x, label_y), font, font_scale, (0, 0, 0), font_thickness + 2)
-                # White text
-                cv2.putText(annotated_image, label, (label_x, label_y), font, font_scale, (255, 255, 255), font_thickness)
-            
-            # Convert numpy types to native Python types for JSON serialization
-            bbox = det.bbox
-            if hasattr(bbox[0], 'item'):  # numpy type
-                bbox = tuple(int(x) for x in bbox)
-            
-            detection_results.append({
-                "class_name": det.class_name,
-                "confidence": float(det.confidence),
-                "bbox": bbox,
-                "class_id": int(det.class_id) if hasattr(det.class_id, 'item') else det.class_id
-            })
+        # Draw annotations if requested
+        annotated_image = image.copy()
+        if draw_boxes:
+            annotated_image = ImageProcessor.draw_detections(annotated_image, detections)
             
         return annotated_image, detection_results
+
+    @staticmethod
+    def draw_detections(image: np.ndarray, detections: List[Detection]) -> np.ndarray:
+        """Draw detections on the image."""
+        annotated_image = image.copy()
+        for det in detections:
+            x1, y1, x2, y2 = det.bbox
+            
+            # Use class colors from settings
+            from config.settings import CLASS_COLORS
+            color = CLASS_COLORS.get(det.class_name, (0, 255, 0))
+            
+            # Draw thicker bounding box
+            cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, 3)
+            
+            # Prepare label
+            label = f"{det.class_name} {det.confidence:.0%}"
+            
+            # Use larger font for better visibility
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.7
+            font_thickness = 2
+            
+            # Get text size
+            (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
+            
+            # Position label above box (or inside if at top edge)
+            label_y = y1 - 10 if y1 > 35 else y1 + text_h + 10
+            label_x = x1
+            
+            # Draw background rectangle with padding
+            padding = 5
+            bg_y1 = label_y - text_h - padding
+            bg_y2 = label_y + padding
+            bg_x1 = label_x - padding
+            bg_x2 = label_x + text_w + padding
+            
+            # Semi-transparent dark background
+            overlay = annotated_image.copy()
+            cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.7, annotated_image, 0.3, 0, annotated_image)
+            
+            # Draw colored border around label
+            cv2.rectangle(annotated_image, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 2)
+            
+            # Draw text with outline for better visibility
+            cv2.putText(annotated_image, label, (label_x, label_y), font, font_scale, (0, 0, 0), font_thickness + 2)
+            cv2.putText(annotated_image, label, (label_x, label_y), font, font_scale, (255, 255, 255), font_thickness)
+            
+        return annotated_image
 
     @staticmethod
     def calculate_statistics(detections: List[Dict]) -> Dict:
@@ -111,7 +99,8 @@ class ImageProcessor:
         pedestrian_classes = ["Pedestrian", "Person", "Person_sitting"]
         
         for det in detections:
-            name = det["class_name"]
+            # Note: detection dict from det.to_dict() uses key "class"
+            name = det.get("class") or det.get("class_name")
             class_counts[name] = class_counts.get(name, 0) + 1
             unique_classes.add(name)
             confidence_sum += det["confidence"]

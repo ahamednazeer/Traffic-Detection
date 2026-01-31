@@ -66,7 +66,7 @@ class VideoProcessor:
             
             # Process frame
             annotated, detections = ImageProcessor.process_image(
-                frame, self.detector, confidence_threshold, fps=fps
+                frame, self.detector, confidence_threshold
             )
             
             all_detections.extend(detections)

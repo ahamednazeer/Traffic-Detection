@@ -123,6 +123,7 @@ def merge_detections(det1: list, det2: list, iou_threshold: float = 0.5) -> list
             b1 = det["bbox"]
             b2 = det2["bbox"]
             
+            # Use dictionary access (now standardized)
             x1 = max(b1["x1"], b2["x1"])
             y1 = max(b1["y1"], b2["y1"])
             x2 = min(b1["x2"], b2["x2"])
@@ -131,6 +132,7 @@ def merge_detections(det1: list, det2: list, iou_threshold: float = 0.5) -> list
             inter = max(0, x2 - x1) * max(0, y2 - y1)
             area1 = (b1["x2"] - b1["x1"]) * (b1["y2"] - b1["y1"])
             area2 = (b2["x2"] - b2["x1"]) * (b2["y2"] - b2["y1"])
+            
             union = area1 + area2 - inter
             
             iou = inter / union if union > 0 else 0
@@ -263,14 +265,14 @@ async def detect_image(
             _, yolo_dets = ImageProcessor.process_image(image, yolo_detector, confidence, draw_boxes=False)
             _, ssd_dets = ImageProcessor.process_image(image, ssd_detector, confidence, draw_boxes=False)
             
-            # Merge detections
+            # Merge detections (now lists of dicts)
             detections = merge_detections(yolo_dets, ssd_dets)
             
             # Draw merged detections
             from detectors.base_detector import Detection
             det_objects = [
                 Detection(
-                    class_name=d["class"],
+                    class_name=d.get("class") or d.get("class_name"),
                     confidence=d["confidence"],
                     bbox=(d["bbox"]["x1"], d["bbox"]["y1"], d["bbox"]["x2"], d["bbox"]["y2"]),
                     class_id=d["class_id"]
@@ -282,7 +284,7 @@ async def detect_image(
             detector = get_detector(model_to_use)
             annotated, detections = ImageProcessor.process_image(image, detector, confidence)
         
-        # Calculate statistics
+        # Calculate statistics (handles new dict format)
         stats = ImageProcessor.calculate_statistics(detections)
         
         # Encode annotated image
