@@ -1,3 +1,5 @@
 
 backend/models/checkpoints/
 *.pth
+backend/yolo11x.pt
+*.pt
