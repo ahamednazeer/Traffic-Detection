@@ -11,7 +11,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from detectors import YOLODetector, YOLOCocoDetector, SSDDetector, BaseDetector
+from detectors import YOLODetector, YOLOCocoDetector, SSDDetector, BaseDetector, TrafficSignDetector
 from processors.image_processor import ImageProcessor
 from processors.video_processor import VideoProcessor
 from config.settings import CLASS_COLORS, CLASS_NAMES
@@ -27,7 +27,8 @@ _detectors = {
     "yolo11m": None,  # medium
     "yolo11l": None,  # large
     "yolo11x": None,  # xlarge
-    "ssd": None
+    "ssd": None,
+    "traffic_sign": None
 }
 _active_model = "yolo11x"  # Default to xlarge for best accuracy
 
@@ -86,6 +87,12 @@ def get_detector(model_name: str) -> BaseDetector:
             _detectors["ssd"] = SSDDetector()
             _detectors["ssd"].load_model()
         return _detectors["ssd"]
+    
+    elif model_name == "traffic_sign":
+        if _detectors["traffic_sign"] is None:
+            _detectors["traffic_sign"] = TrafficSignDetector()
+            _detectors["traffic_sign"].load_model()
+        return _detectors["traffic_sign"]
     
     else:
         raise ValueError(f"Unknown model: {model_name}")
@@ -204,6 +211,13 @@ async def list_models():
                 "loaded": _detectors["ssd"] is not None and _detectors["ssd"].is_loaded
             },
             {
+                "id": "traffic_sign",
+                "name": "Traffic Sign",
+                "description": "Signs (Stop, Speed, etc.)",
+                "size": "~6MB",
+                "loaded": _detectors["traffic_sign"] is not None and _detectors["traffic_sign"].is_loaded
+            },
+            {
                 "id": "ensemble",
                 "name": "Ensemble",
                 "description": "YOLO + SSD combined",
@@ -222,7 +236,7 @@ async def select_model(request: ModelSelectRequest):
     """Select the active model."""
     global _active_model
     
-    valid_models = ["yolo", "yolo11n", "yolo11s", "yolo11m", "yolo11l", "yolo11x", "ssd", "ensemble"]
+    valid_models = ["yolo", "yolo11n", "yolo11s", "yolo11m", "yolo11l", "yolo11x", "ssd", "ensemble", "traffic_sign"]
     if request.model not in valid_models:
         raise HTTPException(status_code=400, detail=f"Invalid model. Valid options: {valid_models}")
     

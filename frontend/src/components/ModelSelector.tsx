@@ -9,6 +9,7 @@ import {
     Trophy,
     CaretDown,
     Check,
+    Warning,
 } from '@phosphor-icons/react';
 
 interface ModelSelectorProps {
@@ -136,6 +137,19 @@ export default function ModelSelector({ onModelChange }: ModelSelectorProps) {
                 >
                     <Target size={22} weight="duotone" className="mx-auto mb-1" />
                     <div className="text-xs font-medium">SSD300</div>
+                </button>
+
+                {/* Traffic Sign */}
+                <button
+                    onClick={() => handleModelChange('traffic_sign')}
+                    disabled={loading}
+                    className={`p-3 rounded-sm border transition-all text-center ${activeModel === 'traffic_sign'
+                            ? 'border-blue-500 bg-blue-950/50 text-blue-400'
+                            : 'border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200'
+                        } ${loading ? 'opacity-50' : ''}`}
+                >
+                    <Warning size={22} weight="duotone" className="mx-auto mb-1" />
+                    <div className="text-xs font-medium">Signs</div>
                 </button>
 
                 {/* Ensemble */}

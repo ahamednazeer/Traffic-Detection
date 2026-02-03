@@ -1,7 +1,7 @@
 
 services:
   backend:
-    image: ahamednazeer/traffic_detection:0.1-be
+    image: ahamednazeer/traffic_detection:0.2-be
     container_name: traffic_detection_backend
     ports:
       - "8000:8000"
@@ -14,7 +14,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: ahamednazeer/traffic_detection:0.1-fe
+    image: ahamednazeer/traffic_detection:0.2-fe
     container_name: traffic_detection_frontend
     ports:
       - "3000:3000"

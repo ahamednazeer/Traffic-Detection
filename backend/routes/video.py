@@ -12,7 +12,7 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Optional
 
-from detectors import YOLODetector
+from detectors import YOLODetector, YOLOCocoDetector
 from processors.image_processor import ImageProcessor
 
 router = APIRouter(prefix="/api", tags=["video"])
@@ -36,7 +36,9 @@ async def video_process_websocket(websocket: WebSocket):
         confidence = metadata.get("confidence", 0.5)
         skip_frames = metadata.get("skip_frames", 2)
         
-        print(f"Video WebSocket: Receiving video ({total_size} bytes)")
+        model_name = metadata.get("model", "yolo11m") # Default to COCO Medium
+        
+        print(f"Video WebSocket: Receiving video ({total_size} bytes), Model: {model_name}")
         
         # Send acknowledgment
         await websocket.send_json({"type": "ready"})
@@ -68,8 +70,22 @@ async def video_process_websocket(websocket: WebSocket):
         print(f"Video WebSocket: Saved to {temp_input.name}")
         
         # Load detector
-        await websocket.send_json({"type": "status", "message": "Loading model..."})
-        detector = YOLODetector()
+        await websocket.send_json({"type": "status", "message": f"Loading model ({model_name})..."})
+        
+        # Select detector instance
+        if model_name == "yolo":
+            detector = YOLODetector()
+        elif model_name.startswith("yolo11"):
+            # Extract size (n, s, m, l, x)
+            size = model_name[-1] if model_name[-1] in "nsmlx" else "m"
+            detector = YOLOCocoDetector(model_size=size)
+        elif model_name == "ensemble":
+            # For video, ensemble is too slow, fallback to a good COCO model
+            detector = YOLOCocoDetector(model_size="m")
+        else:
+            # Fallback
+            detector = YOLOCocoDetector(model_size="m")
+            
         detector.load_model()
         
         # Open video

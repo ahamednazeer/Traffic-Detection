@@ -4,6 +4,7 @@ Detects 80 classes including various vehicle types
 """
 import numpy as np
 from typing import List
+import cv2
 from ultralytics import YOLO
 
 from .base_detector import BaseDetector, Detection
@@ -19,6 +20,8 @@ COCO_TRAFFIC_MAPPING = {
     5: "Bus",             # bus
     6: "Car",             # train -> Car
     7: "Truck",           # truck
+    9: "Traffic Light",   # traffic light
+    11: "Stop Sign",      # stop sign
 }
 
 # All 80 COCO class names for reference
@@ -119,6 +122,10 @@ class YOLOCocoDetector(BaseDetector):
                         else:
                             class_name = COCO_CLASS_NAMES[class_id] if class_id < len(COCO_CLASS_NAMES) else f"Class_{class_id}"
                         
+                        # Determine Traffic Light State
+                        if class_name == "Traffic Light":
+                            class_name = self._determine_signal_state(image, (x1, y1, x2, y2))
+                        
                         detections.append(Detection(
                             class_name=class_name,
                             confidence=confidence,
@@ -130,6 +137,72 @@ class YOLOCocoDetector(BaseDetector):
             print(f"YOLO COCO detection error: {e}")
         
         return detections
+    
+    def _determine_signal_state(self, image: np.ndarray, bbox: tuple) -> str:
+        """
+        Analyze the bounding box to determine if the traffic light 
+        is Red, Yellow, or Green.
+        """
+        x1, y1, x2, y2 = bbox
+        
+        # Ensure coordinates are within image bounds
+        h, w = image.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        
+        # Extract ROI
+        roi = image[y1:y2, x1:x2]
+        if roi.size == 0:
+            return "Traffic Light"
+            
+        # Convert to HSV
+        hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        
+        # Define color ranges
+        # Red has two ranges in HSV (0-10 and 160-180)
+        # Relaxed thresholds: Saturation 30, Value 30 to detect washed out/dark lights
+        lower_red1 = np.array([0, 30, 30])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([160, 30, 30])
+        upper_red2 = np.array([180, 255, 255])
+        
+        lower_yellow = np.array([15, 30, 30])
+        upper_yellow = np.array([35, 255, 255])
+        
+        lower_green = np.array([40, 30, 30]) 
+        upper_green = np.array([90, 255, 255])
+        
+        # Create masks
+        mask_red1 = cv2.inRange(hsv_roi, lower_red1, upper_red1)
+        mask_red2 = cv2.inRange(hsv_roi, lower_red2, upper_red2)
+        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+        
+        mask_yellow = cv2.inRange(hsv_roi, lower_yellow, upper_yellow)
+        mask_green = cv2.inRange(hsv_roi, lower_green, upper_green)
+        
+        # Count pixels
+        red_pixels = cv2.countNonZero(mask_red)
+        yellow_pixels = cv2.countNonZero(mask_yellow)
+        green_pixels = cv2.countNonZero(mask_green)
+        
+        # Threshold to consider it valid (e.g. at least 0.1% of pixels or absolute count)
+        total_pixels = roi.shape[0] * roi.shape[1]
+        threshold = max(5, total_pixels * 0.001) # Very low threshold for video/small objects
+        
+        states = {
+            "Red Light": red_pixels,
+            "Yellow Light": yellow_pixels,
+            "Green Light": green_pixels
+        }
+        
+        # Get the color with max pixels
+        best_state = max(states, key=states.get)
+        max_pixels = states[best_state]
+        
+        if max_pixels > threshold:
+            return best_state
+            
+        return "Traffic Light"
     
     def get_model_name(self) -> str:
         return f"YOLO11-{self.model_size.upper()} (COCO)"

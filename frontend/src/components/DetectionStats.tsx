@@ -21,6 +21,11 @@ const CLASS_COLORS: Record<string, string> = {
     Misc: '#06b6d4',
     Tram: '#a855f7',
     Person_sitting: '#f97316',
+    'Stop Sign': '#ef4444',
+    'Speed Limit': '#f8fafc',
+    'Yield': '#eab308',
+    'Warning': '#f97316',
+    'Traffic Sign': '#fbbf24',
 };
 
 export default function DetectionStatsPanel({ stats, processingTime }: DetectionStatsProps) {

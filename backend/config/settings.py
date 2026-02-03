@@ -9,6 +9,7 @@ BASE_DIR = Path(__file__).parent.parent
 MODELS_DIR = BASE_DIR / "models"
 YOLO_MODEL_PATH = MODELS_DIR / "best.pt"
 SSD_MODEL_PATH = MODELS_DIR / "ssd300_vgg16_coco.pth"
+TRAFFIC_SIGN_MODEL_PATH = MODELS_DIR / "traffic_sign.pt"
 
 # Ensure models directory exists
 MODELS_DIR.mkdir(exist_ok=True)
@@ -24,7 +25,12 @@ MAX_CONFIDENCE = 1.0
 # Class Configuration
 CLASS_NAMES = [
     "Car", "Pedestrian", "Van", "Cyclist",
-    "Truck", "Misc", "Tram", "Person_sitting"
+    "Truck", "Misc", "Tram", "Person_sitting",
+    "Traffic Light", "Red Light", "Yellow Light", "Green Light",
+    "Stop Sign", "Speed Limit", "Yield", "Warning", "Traffic Sign",
+    "Speed Limit 10", "Speed Limit 20", "Speed Limit 30", "Speed Limit 40",
+    "Speed Limit 50", "Speed Limit 60", "Speed Limit 70", "Speed Limit 80",
+    "Speed Limit 90", "Speed Limit 100", "Speed Limit 110", "Speed Limit 120"
 ]
 
 # BGR colors for OpenCV
@@ -38,6 +44,32 @@ CLASS_COLORS = {
     "Tram": (128, 0, 128),
     "Person_sitting": (255, 165, 0),
     "Bus": (0, 128, 255),  # Orange-ish for buses
+    "Traffic Light": (0, 255, 255),  # Yellow/Cyan mix for high visibility
+    "Red Light": (0, 0, 255),        # Red (BGR)
+    "Yellow Light": (0, 255, 255),   # Yellow (BGR)
+    "Green Light": (0, 255, 0),      # Green (BGR)
+    "Stop Sign": (0, 0, 255),        # Red
+    "Speed Limit": (255, 255, 255),  # White
+    "Yield": (0, 255, 255),          # Yellow
+    "Warning": (0, 165, 255),        # Orange
+    "Prohibitory": (0, 0, 255),      # Red
+    "Prohibitory": (0, 0, 255),      # Red
+    "Mandatory": (255, 0, 0),        # Blue
+    "Traffic Sign": (0, 255, 255),   # Yellow
+    
+    # Speed Limits (White/Red)
+    "Speed Limit 10": (255, 255, 255),
+    "Speed Limit 20": (255, 255, 255),
+    "Speed Limit 30": (255, 255, 255),
+    "Speed Limit 40": (255, 255, 255),
+    "Speed Limit 50": (255, 255, 255),
+    "Speed Limit 60": (255, 255, 255),
+    "Speed Limit 70": (255, 255, 255),
+    "Speed Limit 80": (255, 255, 255),
+    "Speed Limit 90": (255, 255, 255),
+    "Speed Limit 100": (255, 255, 255),
+    "Speed Limit 110": (255, 255, 255),
+    "Speed Limit 120": (255, 255, 255),
 }
 
 # SSD COCO class mapping (relevant traffic classes)
