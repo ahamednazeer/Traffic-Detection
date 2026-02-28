@@ -10,6 +10,7 @@ import {
     CaretDown,
     Check,
     Warning,
+    Pulse,
 } from '@phosphor-icons/react';
 
 interface ModelSelectorProps {
@@ -25,20 +26,21 @@ const YOLO11_SIZES = [
 ];
 
 export default function ModelSelector({ onModelChange }: ModelSelectorProps) {
-    const [activeModel, setActiveModel] = useState('yolo11x');
+    const [activeModel, setActiveModel] = useState('accident_yolo11x');
     const [loading, setLoading] = useState(false);
     const [showYoloDropdown, setShowYoloDropdown] = useState(false);
-    const dropdownRef = useRef<HTMLDivElement>(null);
+    const yoloDropdownRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         api.getModels().then(data => {
             setActiveModel(data.active);
+            onModelChange?.(data.active);
         }).catch(console.error);
     }, []);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
-            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+            if (yoloDropdownRef.current && !yoloDropdownRef.current.contains(event.target as Node)) {
                 setShowYoloDropdown(false);
             }
         };
@@ -68,7 +70,21 @@ export default function ModelSelector({ onModelChange }: ModelSelectorProps) {
             <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
                 Detection Model
             </h3>
+
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                        {/* Accident YOLO11x */}
+                        <button
+                            onClick={() => handleModelChange('accident_yolo11x')}
+                            disabled={loading}
+                            className={`p-3 rounded-sm border transition-all text-center ${activeModel === 'accident_yolo11x'
+                                ? 'border-blue-500 bg-blue-950/50 text-blue-400'
+                                : 'border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200'
+                                } ${loading ? 'opacity-50' : ''}`}
+                        >
+                            <Pulse size={22} weight="duotone" className="mx-auto mb-1" />
+                            <div className="text-xs font-medium">Accident</div>
+                            <div className="text-[10px] text-slate-500">Custom</div>
+                        </button>
                 {/* Custom YOLO */}
                 <button
                     onClick={() => handleModelChange('yolo')}
@@ -83,7 +99,7 @@ export default function ModelSelector({ onModelChange }: ModelSelectorProps) {
                 </button>
 
                 {/* YOLO11 with Dropdown */}
-                <div className="relative" ref={dropdownRef}>
+                <div className="relative" ref={yoloDropdownRef}>
                     <button
                         onClick={() => setShowYoloDropdown(!showYoloDropdown)}
                         disabled={loading}

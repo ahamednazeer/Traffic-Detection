@@ -10,6 +10,8 @@ MODELS_DIR = BASE_DIR / "models"
 YOLO_MODEL_PATH = MODELS_DIR / "best.pt"
 SSD_MODEL_PATH = MODELS_DIR / "ssd300_vgg16_coco.pth"
 TRAFFIC_SIGN_MODEL_PATH = MODELS_DIR / "traffic_sign.pt"
+ACCIDENT_MODEL_PATH = MODELS_DIR / "accident_train" / "weights" / "best.pt"
+ACCIDENT_MODEL_URL = "backend/models"
 
 # Ensure models directory exists
 MODELS_DIR.mkdir(exist_ok=True)
@@ -70,6 +72,10 @@ CLASS_COLORS = {
     "Speed Limit 100": (255, 255, 255),
     "Speed Limit 110": (255, 255, 255),
     "Speed Limit 120": (255, 255, 255),
+    "Accident": (0, 0, 255),
+    "accident": (0, 0, 255),
+    "Vehicle": (255, 0, 0),
+    "vehicle": (255, 0, 0),
 }
 
 # SSD COCO class mapping (relevant traffic classes)

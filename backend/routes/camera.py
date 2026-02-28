@@ -8,20 +8,21 @@ import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Optional
 
-from detectors import YOLODetector, SSDDetector
+from detectors import AccidentYOLODetector
 from processors.image_processor import ImageProcessor
+from utils.accident import summarize_accident_from_detections
 
 router = APIRouter(prefix="/api", tags=["camera"])
 
 # Global detector instances
-_camera_detector: Optional[YOLODetector] = None
+_camera_detector: Optional[AccidentYOLODetector] = None
 
 
 def get_camera_detector():
     """Get or create detector for camera."""
     global _camera_detector
     if _camera_detector is None:
-        _camera_detector = YOLODetector()
+        _camera_detector = AccidentYOLODetector()
         _camera_detector.load_model()
     return _camera_detector
 
@@ -64,12 +65,18 @@ async def camera_websocket(websocket: WebSocket):
                 
                 # Calculate stats
                 stats = ImageProcessor.calculate_statistics(detections)
+
+                accident = summarize_accident_from_detections(
+                    detections,
+                    confidence_threshold=0.5
+                )
                 
                 # Send response
                 await websocket.send_json({
                     "frame": annotated_base64,
                     "detections": detections,
-                    "stats": stats
+                    "stats": stats,
+                    "accident": accident
                 })
                 
             except Exception as e:

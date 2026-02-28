@@ -10,7 +10,7 @@ import {
     Camera,
     Robot,
     Tag,
-    Package,
+    Database,
     Pulse,
     CheckCircle,
     Warning,
@@ -18,7 +18,7 @@ import {
 
 export default function DashboardOverview() {
     const router = useRouter();
-    const [health, setHealth] = useState<{ status: string; active_model: string } | null>(null);
+    const [health, setHealth] = useState<{ status: string; active_model: string; active_dataset?: string } | null>(null);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
@@ -29,20 +29,20 @@ export default function DashboardOverview() {
 
     const features = [
         {
-            title: 'Image Detection',
-            description: 'Upload images for object detection',
+            title: 'Accident (Image)',
+            description: 'Upload images for accident detection',
             icon: Image,
             path: '/dashboard/image',
         },
         {
-            title: 'Video Detection',
-            description: 'Process video files frame by frame',
+            title: 'Accident (Video)',
+            description: 'Process video files for accident detection',
             icon: VideoCamera,
             path: '/dashboard/video',
         },
         {
-            title: 'Live Camera',
-            description: 'Real-time detection from webcam',
+            title: 'Live Accident',
+            description: 'Real-time accident detection from webcam',
             icon: Camera,
             path: '/dashboard/camera',
         },
@@ -69,6 +69,11 @@ export default function DashboardOverview() {
                         <p className="text-green-400/70 text-sm">
                             Active model: {health.active_model.toUpperCase()}
                         </p>
+                        {health.active_dataset && (
+                            <p className="text-green-400/70 text-sm">
+                                Active dataset: {health.active_dataset.toUpperCase()}
+                            </p>
+                        )}
                     </div>
                 </div>
             ) : (
@@ -81,7 +86,7 @@ export default function DashboardOverview() {
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <DataCard title="Detection Models" value="2" icon={Robot} color="blue" />
                 <DataCard title="YOLO Classes" value="8" icon={Tag} color="green" />
-                <DataCard title="SSD Classes" value="COCO" icon={Package} color="purple" />
+                <DataCard title="Pretrained Datasets" value="2" icon={Database} color="purple" />
                 <DataCard title="Status" value={health ? 'Online' : 'Offline'} icon={Pulse} color={health ? 'green' : 'red'} />
             </div>
 

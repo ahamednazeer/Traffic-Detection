@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import ModelSelector from '@/components/ModelSelector';
 import DetectionStatsPanel from '@/components/DetectionStats';
-import type { DetectionStats } from '@/lib/api';
+import AccidentStatus from '@/components/AccidentStatus';
+import type { DetectionStats, AccidentResult, AccidentTimelineEntry, AccidentClip } from '@/lib/api';
 import {
     Upload,
     Play,
@@ -12,21 +13,40 @@ import {
 } from '@phosphor-icons/react';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
 
 export default function VideoDetectionPage() {
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [resultVideo, setResultVideo] = useState<string | null>(null);
+    const [previewFrame, setPreviewFrame] = useState<string | null>(null);
     const [stats, setStats] = useState<DetectionStats | null>(null);
+    const [accident, setAccident] = useState<AccidentResult | null>(null);
+    const [accidentTimeline, setAccidentTimeline] = useState<AccidentTimelineEntry[]>([]);
+    const [accidentPeaks, setAccidentPeaks] = useState<AccidentTimelineEntry[]>([]);
+    const [accidentClip, setAccidentClip] = useState<(AccidentClip & { url: string }) | null>(null);
+    const [activeModel, setActiveModel] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [confidence, setConfidence] = useState(0.5);
-    const [skipFrames, setSkipFrames] = useState(2);
+    const [skipFrames, setSkipFrames] = useState(0);
+    const [livePreview, setLivePreview] = useState(true);
+    const [previewFps, setPreviewFps] = useState(10);
+    const [clipSeconds, setClipSeconds] = useState(8);
+    const [previewFpsActual, setPreviewFpsActual] = useState(0);
+    const [jobId, setJobId] = useState<string | null>(null);
     const [progress, setProgress] = useState(0);
     const [progressStatus, setProgressStatus] = useState<string | null>(null);
     const [videoInfo, setVideoInfo] = useState<any>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const wsRef = useRef<WebSocket | null>(null);
+    const cancelRef = useRef(false);
+    const resultVideoRef = useRef<HTMLVideoElement>(null);
+    const previewFrameCountRef = useRef(0);
+    const previewLastTimeRef = useRef(Date.now());
+    const pollRef = useRef<number | null>(null);
+    const jobIdRef = useRef<string | null>(null);
+    const progressRef = useRef(0);
 
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -34,9 +54,14 @@ export default function VideoDetectionPage() {
             setSelectedFile(file);
             setResultVideo(null);
             setStats(null);
+            setAccident(null);
             setError(null);
             setVideoInfo(null);
             setProgress(0);
+            setPreviewFrame(null);
+            setAccidentTimeline([]);
+            setAccidentPeaks([]);
+            setAccidentClip(null);
         }
     };
 
@@ -47,10 +72,30 @@ export default function VideoDetectionPage() {
         setError(null);
         setProgress(0);
         setProgressStatus('Connecting...');
+        setPreviewFrame(null);
+        setPreviewFpsActual(0);
+        setAccidentTimeline([]);
+        setAccidentPeaks([]);
+        setAccidentClip(null);
+        setJobId(null);
+        jobIdRef.current = null;
+        progressRef.current = 0;
+        if (pollRef.current) {
+            window.clearInterval(pollRef.current);
+            pollRef.current = null;
+        }
+        previewFrameCountRef.current = 0;
+        previewLastTimeRef.current = Date.now();
+        cancelRef.current = false;
 
         try {
             const ws = new WebSocket(`${WS_URL}/api/video/process`);
             wsRef.current = ws;
+            const newJobId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+                ? crypto.randomUUID()
+                : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            setJobId(newJobId);
+            jobIdRef.current = newJobId;
 
             ws.onopen = async () => {
                 setProgressStatus('Sending video...');
@@ -59,7 +104,13 @@ export default function VideoDetectionPage() {
                 ws.send(JSON.stringify({
                     size: selectedFile.size,
                     confidence,
-                    skip_frames: skipFrames
+                    skip_frames: skipFrames,
+                    model: activeModel || 'accident_yolo11x',
+                    job_id: newJobId,
+                    preview: livePreview,
+                    preview_fps: previewFps,
+                    preview_width: 640,
+                    clip_seconds: clipSeconds
                 }));
             };
 
@@ -67,6 +118,9 @@ export default function VideoDetectionPage() {
                 const data = JSON.parse(event.data);
 
                 if (data.error) {
+                    if (cancelRef.current) {
+                        return;
+                    }
                     setError(data.error);
                     setLoading(false);
                     ws.close();
@@ -74,6 +128,17 @@ export default function VideoDetectionPage() {
                 }
 
                 if (data.type === 'ready') {
+                    if (data.job_id) {
+                        setJobId(data.job_id);
+                        jobIdRef.current = data.job_id;
+                        if (pollRef.current) {
+                            window.clearInterval(pollRef.current);
+                        }
+                        pollRef.current = window.setInterval(() => {
+                            pollJob(data.job_id);
+                        }, 5000);
+                        pollJob(data.job_id);
+                    }
                     // Start sending chunks
                     const reader = new FileReader();
                     reader.onload = () => {
@@ -100,29 +165,104 @@ export default function VideoDetectionPage() {
                 }
 
                 if (data.type === 'progress') {
-                    setProgress(data.progress);
-                    setProgressStatus(`Processing: ${data.frame}/${data.total} frames`);
+                    if (data.progress >= progressRef.current) {
+                        progressRef.current = data.progress;
+                        setProgress(data.progress);
+                    }
+                    if (data.frame && data.total) {
+                        setProgressStatus(`Processing: ${data.frame}/${data.total} frames`);
+                    }
+                }
+
+                if (data.type === 'preview') {
+                    if (cancelRef.current) {
+                        return;
+                    }
+                    setPreviewFrame(`data:image/jpeg;base64,${data.frame}`);
+                    if (data.processed_index && data.total) {
+                        const derivedProgress = Math.floor((data.processed_index / data.total) * 100);
+                        if (derivedProgress >= progressRef.current) {
+                            progressRef.current = derivedProgress;
+                            setProgress(derivedProgress);
+                            setProgressStatus(`Processing: ${data.processed_index}/${data.total} frames`);
+                        }
+                    }
+                    previewFrameCountRef.current += 1;
+                    const now = Date.now();
+                    if (now - previewLastTimeRef.current >= 1000) {
+                        setPreviewFpsActual(previewFrameCountRef.current);
+                        previewFrameCountRef.current = 0;
+                        previewLastTimeRef.current = now;
+                    }
                 }
 
                 if (data.type === 'complete') {
+                    if (cancelRef.current) {
+                        return;
+                    }
                     setResultVideo(`data:video/mp4;base64,${data.video_base64}`);
                     setStats(data.statistics);
+                    setAccident(data.accident || null);
+                    setAccidentTimeline(data.accident_timeline || []);
+                    setAccidentPeaks(data.accident_peaks || []);
+                    if (data.accident_clip && data.accident_clip.clip_base64) {
+                        setAccidentClip({
+                            ...data.accident_clip,
+                            url: `data:video/mp4;base64,${data.accident_clip.clip_base64}`
+                        });
+                    } else {
+                        setAccidentClip(null);
+                    }
                     setVideoInfo(data.video_info);
                     setProgress(100);
                     setProgressStatus('Complete!');
+                    setPreviewFrame(null);
                     setLoading(false);
+                    progressRef.current = 100;
+                    if (pollRef.current) {
+                        window.clearInterval(pollRef.current);
+                        pollRef.current = null;
+                    }
                     ws.close();
                 }
             };
 
             ws.onerror = (err) => {
+                if (cancelRef.current) {
+                    return;
+                }
                 console.error('WebSocket error:', err);
-                setError('Connection failed. Is the backend running?');
-                setLoading(false);
+                if (loading && jobIdRef.current) {
+                    setError('Connection failed. Continuing in background...');
+                    setProgressStatus('Reconnecting...');
+                    if (pollRef.current) {
+                        window.clearInterval(pollRef.current);
+                    }
+                    pollRef.current = window.setInterval(() => {
+                        pollJob(jobIdRef.current as string);
+                    }, 3000);
+                    pollJob(jobIdRef.current as string);
+                } else {
+                    setError('Connection failed. Is the backend running?');
+                    setLoading(false);
+                }
             };
 
             ws.onclose = () => {
                 wsRef.current = null;
+                if (!cancelRef.current && loading) {
+                    setError('Connection closed during processing. Continuing in background...');
+                    setProgressStatus('Reconnecting...');
+                    if (jobIdRef.current) {
+                        if (pollRef.current) {
+                            window.clearInterval(pollRef.current);
+                        }
+                        pollRef.current = window.setInterval(() => {
+                            pollJob(jobIdRef.current as string);
+                        }, 3000);
+                        pollJob(jobIdRef.current as string);
+                    }
+                }
             };
 
         } catch (err: any) {
@@ -131,15 +271,125 @@ export default function VideoDetectionPage() {
         }
     };
 
+    const handleStop = () => {
+        cancelRef.current = true;
+        if (wsRef.current && wsRef.current.readyState < WebSocket.CLOSING) {
+            wsRef.current.close();
+        }
+        if (pollRef.current) {
+            window.clearInterval(pollRef.current);
+            pollRef.current = null;
+        }
+        setLoading(false);
+        setProgressStatus('Cancelled');
+        setPreviewFrame(null);
+        setPreviewFpsActual(0);
+    };
+
+    const pollJob = async (id: string) => {
+        try {
+            const res = await fetch(`${API_URL}/api/video/jobs/${id}`);
+            if (!res.ok) {
+                return;
+            }
+            const job = await res.json();
+            if (job.preview) {
+                setPreviewFrame(`data:image/jpeg;base64,${job.preview}`);
+            }
+            if (typeof job.progress === 'number' && job.progress >= progressRef.current) {
+                progressRef.current = job.progress;
+                setProgress(job.progress);
+            }
+            if (job.frame && job.total) {
+                setProgressStatus(`Processing: ${job.frame}/${job.total} frames`);
+            }
+            if (job.status === 'complete' && job.result) {
+                const result = job.result;
+                setResultVideo(`data:video/mp4;base64,${result.video_base64}`);
+                setStats(result.statistics);
+                setAccident(result.accident || null);
+                setAccidentTimeline(result.accident_timeline || []);
+                setAccidentPeaks(result.accident_peaks || []);
+                if (result.accident_clip && result.accident_clip.clip_base64) {
+                    setAccidentClip({
+                        ...result.accident_clip,
+                        url: `data:video/mp4;base64,${result.accident_clip.clip_base64}`
+                    });
+                } else {
+                    setAccidentClip(null);
+                }
+                setVideoInfo(result.video_info);
+                setProgress(100);
+                setProgressStatus('Complete!');
+                setPreviewFrame(null);
+                setLoading(false);
+                if (pollRef.current) {
+                    window.clearInterval(pollRef.current);
+                    pollRef.current = null;
+                }
+            }
+            if (job.status === 'error') {
+                setError(job.error || 'Processing failed');
+                setLoading(false);
+                if (pollRef.current) {
+                    window.clearInterval(pollRef.current);
+                    pollRef.current = null;
+                }
+            }
+        } catch (err) {
+            // ignore
+        }
+    };
+
+    const formatTime = (seconds: number) => {
+        if (!Number.isFinite(seconds)) return '--';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        const ms = Math.floor((seconds - Math.floor(seconds)) * 100);
+        if (mins > 0) {
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+        return `${secs}.${ms.toString().padStart(2, '0')}s`;
+    };
+
+    const timelineBuckets = useMemo(() => {
+        if (!accidentTimeline.length) return [];
+        const bucketCount = 80;
+        const buckets: { score: number; timestamp: number }[] = [];
+        for (let i = 0; i < bucketCount; i++) {
+            const start = Math.floor((i * accidentTimeline.length) / bucketCount);
+            const end = Math.max(start + 1, Math.floor(((i + 1) * accidentTimeline.length) / bucketCount));
+            let maxScore = 0;
+            let maxTimestamp = accidentTimeline[start]?.timestamp ?? 0;
+            for (let j = start; j < end && j < accidentTimeline.length; j++) {
+                const entry = accidentTimeline[j];
+                if (entry.score > maxScore) {
+                    maxScore = entry.score;
+                    maxTimestamp = entry.timestamp;
+                }
+            }
+            buckets.push({ score: maxScore, timestamp: maxTimestamp });
+        }
+        return buckets;
+    }, [accidentTimeline]);
+
+    const jumpToTimestamp = (timestamp: number) => {
+        if (!resultVideoRef.current) return;
+        resultVideoRef.current.currentTime = Math.max(0, timestamp);
+        resultVideoRef.current.play();
+    };
+
+    const accidentThreshold = accident?.threshold ?? 0.5;
+
     return (
         <div className="space-y-6 animate-slide-up">
             <div className="flex items-center justify-between">
                 <div>
                     <h1 className="font-chivo font-bold text-2xl uppercase tracking-wider">
-                        Video Detection
+                        Accident Detection
                     </h1>
                     <p className="text-slate-400 text-sm mt-1">
-                        Process video files for object detection
+                        Process video files for accident detection
                     </p>
                 </div>
             </div>
@@ -147,7 +397,7 @@ export default function VideoDetectionPage() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Left Column - Controls */}
                 <div className="space-y-4">
-                    <ModelSelector />
+                    <ModelSelector onModelChange={setActiveModel} />
 
                     {/* Confidence Slider */}
                     <div className="card">
@@ -156,9 +406,9 @@ export default function VideoDetectionPage() {
                         </h3>
                         <input
                             type="range"
-                            min="0.1"
+                            min="0.01"
                             max="1"
-                            step="0.05"
+                            step="0.01"
                             value={confidence}
                             onChange={(e) => setConfidence(parseFloat(e.target.value))}
                             className="w-full"
@@ -186,6 +436,59 @@ export default function VideoDetectionPage() {
                         />
                         <div className="text-center text-green-400 font-mono text-lg mt-2">
                             Process every {skipFrames + 1} frame(s)
+                        </div>
+                    </div>
+
+                    {/* Clip Length */}
+                    <div className="card">
+                        <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
+                            Accident Clip Length
+                        </h3>
+                        <input
+                            type="range"
+                            min="5"
+                            max="10"
+                            step="1"
+                            value={clipSeconds}
+                            onChange={(e) => setClipSeconds(parseInt(e.target.value, 10))}
+                            className="w-full"
+                            disabled={loading}
+                        />
+                        <div className="text-center text-blue-400 font-mono text-lg mt-2">
+                            {clipSeconds}s
+                        </div>
+                    </div>
+
+                    {/* Live Preview */}
+                    <div className="card">
+                        <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
+                            Live Preview
+                        </h3>
+                        <label className="flex items-center justify-between text-sm text-slate-300">
+                            <span>Show preview while processing</span>
+                            <input
+                                type="checkbox"
+                                checked={livePreview}
+                                onChange={(e) => setLivePreview(e.target.checked)}
+                                disabled={loading}
+                                className="h-4 w-4 accent-blue-500"
+                            />
+                        </label>
+                        <div className="mt-3">
+                            <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                                <span>Preview FPS</span>
+                                <span>{previewFps} fps</span>
+                            </div>
+                            <input
+                                type="range"
+                                min="4"
+                                max="20"
+                                step="1"
+                                value={previewFps}
+                                onChange={(e) => setPreviewFps(parseInt(e.target.value, 10))}
+                                className="w-full"
+                                disabled={loading || !livePreview}
+                            />
                         </div>
                     </div>
 
@@ -218,23 +521,32 @@ export default function VideoDetectionPage() {
                     </div>
 
                     {/* Process Button */}
-                    <button
-                        onClick={handleProcess}
-                        disabled={!selectedFile || loading}
-                        className="btn-primary w-full flex items-center justify-center gap-2"
-                    >
-                        {loading ? (
-                            <>
-                                <ArrowsClockwise size={18} className="animate-spin" />
-                                Processing...
-                            </>
-                        ) : (
-                            <>
-                                <Play size={18} weight="duotone" />
-                                Process Video
-                            </>
-                        )}
-                    </button>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={handleProcess}
+                            disabled={!selectedFile || loading}
+                            className="btn-primary flex-1 flex items-center justify-center gap-2"
+                        >
+                            {loading ? (
+                                <>
+                                    <ArrowsClockwise size={18} className="animate-spin" />
+                                    Processing...
+                                </>
+                            ) : (
+                                <>
+                                    <Play size={18} weight="duotone" />
+                                    Process Video
+                                </>
+                            )}
+                        </button>
+                        <button
+                            onClick={handleStop}
+                            disabled={!loading}
+                            className="btn-secondary w-28 flex items-center justify-center gap-2"
+                        >
+                            Stop
+                        </button>
+                    </div>
 
 
 
@@ -259,7 +571,7 @@ export default function VideoDetectionPage() {
                         </div>
                     )}
 
-                    {/* Stats */}
+                    <AccidentStatus accident={accident} />
                     <DetectionStatsPanel stats={stats} />
                 </div>
 
@@ -271,13 +583,31 @@ export default function VideoDetectionPage() {
                         </h3>
                         <div className="aspect-video bg-slate-900 rounded-sm overflow-hidden flex items-center justify-center">
                             {loading ? (
-                                <div className="text-center">
-                                    <ArrowsClockwise size={40} className="text-blue-400 animate-spin mx-auto mb-2" />
-                                    <p className="text-blue-400">{progressStatus}</p>
-                                    <p className="text-slate-500 text-sm mt-1">{progress}% complete</p>
-                                </div>
+                                previewFrame ? (
+                                    <div className="relative w-full h-full">
+                                        <img
+                                            src={previewFrame}
+                                            alt="Live preview"
+                                            className="w-full h-full object-contain"
+                                        />
+                                        <div className="absolute inset-x-0 bottom-0 bg-slate-900/70 px-3 py-2 text-xs text-slate-200 flex items-center justify-between">
+                                            <span>{progressStatus || 'Processing...'}</span>
+                                            <span className="flex items-center gap-3">
+                                                <span>Preview {previewFpsActual} FPS</span>
+                                                <span>{progress}%</span>
+                                            </span>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="text-center">
+                                        <ArrowsClockwise size={40} className="text-blue-400 animate-spin mx-auto mb-2" />
+                                        <p className="text-blue-400">{progressStatus}</p>
+                                        <p className="text-slate-500 text-sm mt-1">{progress}% complete</p>
+                                    </div>
+                                )
                             ) : resultVideo ? (
                                 <video
+                                    ref={resultVideoRef}
                                     src={resultVideo}
                                     controls
                                     className="max-h-full max-w-full"
@@ -290,6 +620,81 @@ export default function VideoDetectionPage() {
                             )}
                         </div>
                     </div>
+
+                    {(accidentTimeline.length > 0 || accidentPeaks.length > 0 || accidentClip) && (
+                        <div className="card">
+                            <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
+                                Accident Timeline
+                            </h3>
+                            {timelineBuckets.length > 0 ? (
+                                <div className="space-y-3">
+                                    <div className="h-20 flex items-end gap-[2px] bg-slate-900/50 rounded-sm p-2">
+                                        {timelineBuckets.map((bucket, index) => {
+                                            const height = Math.max(4, Math.round(bucket.score * 100));
+                                            const isHot = bucket.score >= accidentThreshold;
+                                            return (
+                                                <button
+                                                    key={`${index}-${bucket.timestamp}`}
+                                                    type="button"
+                                                    onClick={() => jumpToTimestamp(bucket.timestamp)}
+                                                    title={`${formatTime(bucket.timestamp)} • ${(bucket.score * 100).toFixed(1)}%`}
+                                                    className={`w-full rounded-sm transition-opacity ${isHot ? 'bg-red-500' : 'bg-slate-600'} hover:opacity-90`}
+                                                    style={{ height: `${height}%` }}
+                                                />
+                                            );
+                                        })}
+                                    </div>
+                                    <div className="text-xs text-slate-500 flex items-center justify-between">
+                                        <span>Click bars to jump</span>
+                                        <span>Threshold {Math.round(accidentThreshold * 100)}%</span>
+                                    </div>
+                                </div>
+                            ) : (
+                                <p className="text-sm text-slate-500">No timeline data yet.</p>
+                            )}
+
+                            {accidentPeaks.length > 0 && (
+                                <div className="mt-4 space-y-2">
+                                    {accidentPeaks.map((peak, index) => (
+                                        <div key={`${peak.timestamp}-${index}`} className="flex items-center justify-between text-sm">
+                                            <div className="text-slate-300">
+                                                Peak {index + 1} • {formatTime(peak.timestamp)} • {(peak.score * 100).toFixed(1)}%
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => jumpToTimestamp(peak.timestamp)}
+                                                className="btn-secondary px-3 py-1 text-xs"
+                                            >
+                                                Jump
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {accidentClip && (
+                                <div className="mt-4">
+                                    <div className="flex items-center justify-between text-sm text-slate-300">
+                                        <span>
+                                            Accident Clip ({formatTime(accidentClip.start)} - {formatTime(accidentClip.end)})
+                                        </span>
+                                        <a
+                                            href={accidentClip.url}
+                                            download={`accident_clip_${Math.round(accidentClip.best_timestamp)}s.mp4`}
+                                            className="text-blue-400 hover:text-blue-300 text-xs"
+                                        >
+                                            Download Clip
+                                        </a>
+                                    </div>
+                                    <video
+                                        src={accidentClip.url}
+                                        controls
+                                        className="mt-2 w-full max-h-64"
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

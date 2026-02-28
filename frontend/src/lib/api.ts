@@ -25,11 +25,45 @@ export interface DetectionStats {
   has_vehicles: boolean;
 }
 
+export interface AccidentResult {
+  detected: boolean;
+  score: number;
+  threshold: number;
+  class_name?: string | null;
+  bbox?: { x1: number; y1: number; x2: number; y2: number } | null;
+  best_frame?: number | null;
+  best_timestamp?: number | null;
+  dataset?: string;
+}
+
+export interface AccidentTimelineEntry {
+  frame?: number;
+  timestamp: number;
+  score: number;
+}
+
+export interface AccidentClip {
+  clip_base64: string;
+  start: number;
+  end: number;
+  duration: number;
+  best_timestamp: number;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
   description: string;
   loaded: boolean;
+}
+
+export interface DatasetInfo {
+  id: string;
+  name: string;
+  description: string;
+  modalities: string[];
+  recommended_for?: string;
+  license?: string;
 }
 
 export interface ImageDetectionResponse {
@@ -38,6 +72,7 @@ export interface ImageDetectionResponse {
   annotated_image: string;
   detections: Detection[];
   statistics: DetectionStats;
+  accident?: AccidentResult;
 }
 
 export interface VideoDetectionResponse {
@@ -53,6 +88,10 @@ export interface VideoDetectionResponse {
     duration_seconds: number;
   };
   statistics: DetectionStats;
+  accident?: AccidentResult;
+  accident_timeline?: AccidentTimelineEntry[];
+  accident_peaks?: AccidentTimelineEntry[];
+  accident_clip?: AccidentClip;
 }
 
 export interface ModelsResponse {
@@ -62,6 +101,11 @@ export interface ModelsResponse {
   class_colors: Record<string, string>;
 }
 
+export interface DatasetsResponse {
+  datasets: DatasetInfo[];
+  active: string;
+}
+
 class APIClient {
   private baseUrl: string;
 
@@ -69,7 +113,7 @@ class APIClient {
     this.baseUrl = baseUrl;
   }
 
-  async health(): Promise<{ status: string; active_model: string }> {
+  async health(): Promise<{ status: string; active_model: string; active_dataset?: string }> {
     const res = await fetch(`${this.baseUrl}/api/health`);
     if (!res.ok) throw new Error('API health check failed');
     return res.json();
@@ -81,6 +125,12 @@ class APIClient {
     return res.json();
   }
 
+  async getDatasets(): Promise<DatasetsResponse> {
+    const res = await fetch(`${this.baseUrl}/api/datasets`);
+    if (!res.ok) throw new Error('Failed to get datasets');
+    return res.json();
+  }
+
   async selectModel(model: string): Promise<{ status: string; active_model: string }> {
     const res = await fetch(`${this.baseUrl}/api/models/select`, {
       method: 'POST',
@@ -88,6 +138,16 @@ class APIClient {
       body: JSON.stringify({ model }),
     });
     if (!res.ok) throw new Error('Failed to select model');
+    return res.json();
+  }
+
+  async selectDataset(dataset: string): Promise<{ status: string; active_dataset: string }> {
+    const res = await fetch(`${this.baseUrl}/api/datasets/select`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataset }),
+    });
+    if (!res.ok) throw new Error('Failed to select dataset');
     return res.json();
   }
 

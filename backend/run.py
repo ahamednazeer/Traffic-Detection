@@ -18,11 +18,12 @@ def main():
     print("Health: http://localhost:8000/api/health")
     print("-" * 50)
     
+    reload_enabled = os.environ.get("FASTAPI_RELOAD", "0") == "1"
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=reload_enabled,
         log_level="info"
     )
 

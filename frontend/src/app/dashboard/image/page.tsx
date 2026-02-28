@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
-import api, { DetectionStats, Detection } from '@/lib/api';
+import api, { DetectionStats, AccidentResult } from '@/lib/api';
 import ModelSelector from '@/components/ModelSelector';
 import DetectionStatsPanel from '@/components/DetectionStats';
+import AccidentStatus from '@/components/AccidentStatus';
 import {
     Upload,
     MagnifyingGlass,
@@ -15,9 +16,11 @@ export default function ImageDetectionPage() {
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [resultImage, setResultImage] = useState<string | null>(null);
     const [stats, setStats] = useState<DetectionStats | null>(null);
+    const [accident, setAccident] = useState<AccidentResult | null>(null);
+    const [activeModel, setActiveModel] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [confidence, setConfidence] = useState(0.5);
+    const [confidence, setConfidence] = useState(0.1);
     const [processingTime, setProcessingTime] = useState<number | undefined>();
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -28,6 +31,7 @@ export default function ImageDetectionPage() {
             setPreviewUrl(URL.createObjectURL(file));
             setResultImage(null);
             setStats(null);
+            setAccident(null);
             setError(null);
         }
     };
@@ -40,13 +44,14 @@ export default function ImageDetectionPage() {
         const startTime = performance.now();
 
         try {
-            const result = await api.detectImage(selectedFile, confidence);
+            const result = await api.detectImage(selectedFile, confidence, activeModel || undefined);
             // Handle both formats: raw base64 or full data URL
             const imageData = result.annotated_image.startsWith('data:')
                 ? result.annotated_image
                 : `data:image/jpeg;base64,${result.annotated_image}`;
             setResultImage(imageData);
             setStats(result.statistics);
+            setAccident(result.accident || null);
             setProcessingTime((performance.now() - startTime) / 1000);
         } catch (err: any) {
             setError(err.message || 'Detection failed');
@@ -60,10 +65,10 @@ export default function ImageDetectionPage() {
             <div className="flex items-center justify-between">
                 <div>
                     <h1 className="font-chivo font-bold text-2xl uppercase tracking-wider">
-                        Image Detection
+                        Accident Detection
                     </h1>
                     <p className="text-slate-400 text-sm mt-1">
-                        Upload an image to detect vehicles and pedestrians
+                        Upload an image to detect traffic accidents
                     </p>
                 </div>
             </div>
@@ -107,7 +112,7 @@ export default function ImageDetectionPage() {
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 {/* Left Column - Controls */}
                 <div className="space-y-4">
-                    <ModelSelector />
+                    <ModelSelector onModelChange={setActiveModel} />
 
                     {/* Confidence Slider */}
                     <div className="card">
@@ -116,9 +121,9 @@ export default function ImageDetectionPage() {
                         </h3>
                         <input
                             type="range"
-                            min="0.1"
+                            min="0.01"
                             max="1"
-                            step="0.05"
+                            step="0.01"
                             value={confidence}
                             onChange={(e) => setConfidence(parseFloat(e.target.value))}
                             className="w-full"
@@ -163,7 +168,7 @@ export default function ImageDetectionPage() {
                         ) : (
                             <>
                                 <MagnifyingGlass size={18} weight="duotone" />
-                                Detect Objects
+                                Detect Accident
                             </>
                         )}
                     </button>
@@ -195,7 +200,8 @@ export default function ImageDetectionPage() {
                 </div>
 
                 {/* Right - Stats */}
-                <div>
+                <div className="space-y-4">
+                    <AccidentStatus accident={accident} />
                     <DetectionStatsPanel stats={stats} processingTime={processingTime} />
                 </div>
             </div>

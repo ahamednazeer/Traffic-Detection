@@ -61,10 +61,10 @@ async def startup_event():
     # Pre-load YOLO model
     try:
         from routes.detection import get_detector
-        get_detector("yolo")
-        print("✅ YOLO model pre-loaded")
+        get_detector("accident_yolo11x")
+        print("✅ Accident model pre-loaded")
     except Exception as e:
-        print(f"⚠️ Could not pre-load YOLO model: {e}")
+        print(f"⚠️ Could not pre-load accident model: {e}")
 
 
 if __name__ == "__main__":

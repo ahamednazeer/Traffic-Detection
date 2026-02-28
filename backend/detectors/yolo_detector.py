@@ -60,7 +60,14 @@ class YOLODetector(BaseDetector):
         
         try:
             # Run inference
-            results = self.model(image, conf=confidence_threshold, verbose=False)
+            results = self.model(
+                image,
+                conf=confidence_threshold,
+                verbose=False,
+                save=False,
+                save_txt=False,
+                save_conf=False
+            )
             
             for result in results:
                 boxes = result.boxes

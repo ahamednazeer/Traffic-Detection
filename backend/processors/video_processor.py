@@ -6,9 +6,10 @@ import numpy as np
 import tempfile
 import subprocess
 import os
-from typing import List, Dict, Any, Generator, Tuple
-from detectors.base_detector import BaseDetector
+from typing import List, Dict, Any, Generator, Tuple, Optional
+from detectors.base_detector import BaseDetector, Detection
 from .image_processor import ImageProcessor
+from utils.accident import summarize_accident_from_detections, select_top_accident_peaks
 
 
 class VideoProcessor:
@@ -22,7 +23,8 @@ class VideoProcessor:
         video_path: str,
         confidence_threshold: float = 0.5,
         output_path: str = None,
-        skip_frames: int = 0
+        skip_frames: int = 0,
+        accident_confidence_threshold: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Process a video file and return detection results.
@@ -49,6 +51,12 @@ class VideoProcessor:
         out = cv2.VideoWriter(temp_raw_path, fourcc, fps, (width, height))
         
         all_detections = []
+        last_detections = []
+        best_accident_score = 0.0
+        best_accident_frame = None
+        best_accident_bbox = None
+        best_accident_class = None
+        accident_timeline = []
         frame_count = 0
         processed_count = 0
         
@@ -61,7 +69,20 @@ class VideoProcessor:
             
             # Skip frames if requested
             if skip_frames > 0 and frame_count % (skip_frames + 1) != 0:
-                out.write(frame)
+                if last_detections:
+                    det_objects = [
+                        Detection(
+                            class_name=d.get("class") or d.get("class_name"),
+                            confidence=d["confidence"],
+                            bbox=(d["bbox"]["x1"], d["bbox"]["y1"], d["bbox"]["x2"], d["bbox"]["y2"]),
+                            class_id=d.get("class_id", -1)
+                        )
+                        for d in last_detections
+                    ]
+                    annotated_skip = ImageProcessor.draw_detections(frame, det_objects)
+                    out.write(annotated_skip)
+                else:
+                    out.write(frame)
                 continue
             
             # Process frame
@@ -70,8 +91,25 @@ class VideoProcessor:
             )
             
             all_detections.extend(detections)
+            last_detections = detections
             processed_count += 1
             out.write(annotated)
+
+            if accident_confidence_threshold is not None:
+                accident = summarize_accident_from_detections(
+                    detections,
+                    confidence_threshold=accident_confidence_threshold
+                )
+                accident_timeline.append({
+                    "frame": frame_count,
+                    "timestamp": (frame_count / fps) if fps > 0 else 0,
+                    "score": accident["score"]
+                })
+                if accident["score"] > best_accident_score:
+                    best_accident_score = accident["score"]
+                    best_accident_frame = frame_count
+                    best_accident_bbox = accident.get("bbox")
+                    best_accident_class = accident.get("class_name")
         
         cap.release()
         out.release()
@@ -105,6 +143,24 @@ class VideoProcessor:
         # Calculate statistics
         stats = ImageProcessor.calculate_statistics(all_detections)
         
+        accident_summary = None
+        accident_peaks = []
+        if accident_confidence_threshold is not None:
+            accident_peaks = select_top_accident_peaks(
+                accident_timeline,
+                max_peaks=3,
+                min_separation_seconds=2.0
+            )
+            accident_summary = {
+                "detected": best_accident_score >= accident_confidence_threshold,
+                "score": round(best_accident_score, 4),
+                "threshold": accident_confidence_threshold,
+                "class_name": best_accident_class,
+                "bbox": best_accident_bbox,
+                "best_frame": best_accident_frame,
+                "best_timestamp": (best_accident_frame / fps) if best_accident_frame and fps > 0 else None
+            }
+
         return {
             "video_info": {
                 "fps": fps,
@@ -116,7 +172,10 @@ class VideoProcessor:
             },
             "statistics": stats,
             "detections": all_detections,
-            "output_path": output_path
+            "output_path": output_path,
+            "accident": accident_summary,
+            "accident_timeline": accident_timeline,
+            "accident_peaks": accident_peaks
         }
     
     def process_video_stream(

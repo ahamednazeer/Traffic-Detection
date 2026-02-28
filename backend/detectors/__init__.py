@@ -5,5 +5,13 @@ from .yolo_coco_detector import YOLOCocoDetector
 from .ssd_detector import SSDDetector
 
 from .traffic_sign_detector import TrafficSignDetector
+from .accident_detector import AccidentYOLODetector
 
-__all__ = ["BaseDetector", "YOLODetector", "YOLOCocoDetector", "SSDDetector", "TrafficSignDetector"]
+__all__ = [
+    "BaseDetector",
+    "YOLODetector",
+    "YOLOCocoDetector",
+    "SSDDetector",
+    "TrafficSignDetector",
+    "AccidentYOLODetector"
+]

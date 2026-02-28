@@ -6,15 +6,17 @@ import numpy as np
 import tempfile
 import os
 import base64
+import subprocess
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from detectors import YOLODetector, YOLOCocoDetector, SSDDetector, BaseDetector, TrafficSignDetector
+from detectors import YOLODetector, YOLOCocoDetector, SSDDetector, BaseDetector, TrafficSignDetector, AccidentYOLODetector
 from processors.image_processor import ImageProcessor
 from processors.video_processor import VideoProcessor
 from config.settings import CLASS_COLORS, CLASS_NAMES
+from utils.accident import summarize_accident_from_detections
 
 
 router = APIRouter(prefix="/api", tags=["detection"])
@@ -27,19 +29,42 @@ _detectors = {
     "yolo11m": None,  # medium
     "yolo11l": None,  # large
     "yolo11x": None,  # xlarge
+    "accident_yolo11x": None,
     "ssd": None,
     "traffic_sign": None
 }
-_active_model = "yolo11x"  # Default to xlarge for best accuracy
+_active_model = "accident_yolo11x"  # Default to accident model
+
+# Pretrained accident datasets (for UI selection / training workflows)
+_DATASETS = [
+    {
+        "id": "cadp",
+        "name": "CADP",
+        "description": "CCTV traffic accident dataset (roadside cameras)",
+        "modalities": ["cctv", "video"],
+        "recommended_for": "CCTV"
+    },
+    {
+        "id": "tumtraf-accid3nd",
+        "name": "TUMTraf-Accid3nD",
+        "description": "Roadside multi-sensor accident dataset",
+        "modalities": ["roadside", "multi-sensor"],
+        "recommended_for": "Multi-sensor"
+    }
+]
+_active_dataset = "cadp"
 
 
 class DetectionRequest(BaseModel):
     confidence: float = 0.5
-    model: str = "yolo11x"
+    model: str = "accident_yolo11x"
 
 
 class ModelSelectRequest(BaseModel):
     model: str
+
+class DatasetSelectRequest(BaseModel):
+    dataset: str
 
 
 def get_detector(model_name: str) -> BaseDetector:
@@ -81,6 +106,12 @@ def get_detector(model_name: str) -> BaseDetector:
             _detectors["yolo11x"] = YOLOCocoDetector(model_size="x")
             _detectors["yolo11x"].load_model()
         return _detectors["yolo11x"]
+    
+    elif model_name == "accident_yolo11x":
+        if _detectors["accident_yolo11x"] is None:
+            _detectors["accident_yolo11x"] = AccidentYOLODetector()
+            _detectors["accident_yolo11x"].load_model()
+        return _detectors["accident_yolo11x"]
     
     elif model_name == "ssd":
         if _detectors["ssd"] is None:
@@ -153,7 +184,7 @@ def merge_detections(det1: list, det2: list, iou_threshold: float = 0.5) -> list
 @router.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "active_model": _active_model}
+    return {"status": "healthy", "active_model": _active_model, "active_dataset": _active_dataset}
 
 
 @router.get("/models")
@@ -161,6 +192,13 @@ async def list_models():
     """List available models."""
     return {
         "models": [
+            {
+                "id": "accident_yolo11x",
+                "name": "Accident (Custom)",
+                "description": "Finetuned on your dataset",
+                "size": "Custom",
+                "loaded": _detectors["accident_yolo11x"] is not None and _detectors["accident_yolo11x"].is_loaded
+            },
             {
                 "id": "yolo",
                 "name": "YOLO (Custom)",
@@ -230,13 +268,34 @@ async def list_models():
         "class_colors": {k: f"rgb({v[2]},{v[1]},{v[0]})" for k, v in CLASS_COLORS.items()}
     }
 
+@router.get("/datasets")
+async def list_datasets():
+    """List available pretrained accident datasets."""
+    return {
+        "datasets": _DATASETS,
+        "active": _active_dataset
+    }
+
+
+@router.post("/datasets/select")
+async def select_dataset(request: DatasetSelectRequest):
+    """Select the active pretrained dataset."""
+    global _active_dataset
+
+    valid_datasets = [d["id"] for d in _DATASETS]
+    if request.dataset not in valid_datasets:
+        raise HTTPException(status_code=400, detail=f"Invalid dataset. Valid options: {valid_datasets}")
+
+    _active_dataset = request.dataset
+    return {"status": "success", "active_dataset": _active_dataset}
+
 
 @router.post("/models/select")
 async def select_model(request: ModelSelectRequest):
     """Select the active model."""
     global _active_model
     
-    valid_models = ["yolo", "yolo11n", "yolo11s", "yolo11m", "yolo11l", "yolo11x", "ssd", "ensemble", "traffic_sign"]
+    valid_models = ["accident_yolo11x", "yolo", "yolo11n", "yolo11s", "yolo11m", "yolo11l", "yolo11x", "ssd", "ensemble", "traffic_sign"]
     if request.model not in valid_models:
         raise HTTPException(status_code=400, detail=f"Invalid model. Valid options: {valid_models}")
     
@@ -270,14 +329,15 @@ async def detect_image(
         
         # Use specified model or active model
         model_to_use = model or _active_model
+        effective_confidence = confidence
         
         if model_to_use == "ensemble":
             # Run both detectors
             yolo_detector = get_detector("yolo")
             ssd_detector = get_detector("ssd")
             
-            _, yolo_dets = ImageProcessor.process_image(image, yolo_detector, confidence, draw_boxes=False)
-            _, ssd_dets = ImageProcessor.process_image(image, ssd_detector, confidence, draw_boxes=False)
+            _, yolo_dets = ImageProcessor.process_image(image, yolo_detector, effective_confidence, draw_boxes=False)
+            _, ssd_dets = ImageProcessor.process_image(image, ssd_detector, effective_confidence, draw_boxes=False)
             
             # Merge detections (now lists of dicts)
             detections = merge_detections(yolo_dets, ssd_dets)
@@ -296,10 +356,13 @@ async def detect_image(
             annotated = ImageProcessor.draw_detections(image, det_objects)
         else:
             detector = get_detector(model_to_use)
-            annotated, detections = ImageProcessor.process_image(image, detector, confidence)
+            annotated, detections = ImageProcessor.process_image(image, detector, effective_confidence)
         
         # Calculate statistics (handles new dict format)
         stats = ImageProcessor.calculate_statistics(detections)
+
+        accident = summarize_accident_from_detections(detections, confidence_threshold=effective_confidence)
+        accident["dataset"] = _active_dataset
         
         # Encode annotated image
         annotated_base64 = ImageProcessor.encode_image_to_base64(annotated)
@@ -309,7 +372,8 @@ async def detect_image(
             "model_used": model_to_use,
             "annotated_image": annotated_base64,
             "detections": detections,
-            "statistics": stats
+            "statistics": stats,
+            "accident": accident
         }
     
     except Exception as e:
@@ -336,6 +400,7 @@ async def detect_video(
         
         # Use specified model or active model
         model_to_use = model or _active_model
+        effective_confidence = confidence
         
         if model_to_use == "ensemble":
             # For video, just use YOLO for speed (ensemble is too slow for video)
@@ -347,11 +412,49 @@ async def detect_video(
         # Process video
         result = processor.process_video_file(
             video_path,
-            confidence_threshold=confidence,
+            confidence_threshold=effective_confidence,
             output_path=output_path,
-            skip_frames=skip_frames
+            skip_frames=skip_frames,
+            accident_confidence_threshold=effective_confidence
         )
         
+        accident = result.get("accident")
+        accident_clip = None
+        if accident and accident.get("detected") and accident.get("best_timestamp") is not None:
+            clip_seconds = 8.0
+            half = clip_seconds / 2
+            duration_seconds = result["video_info"].get("duration_seconds", 0)
+            best_ts = float(accident["best_timestamp"])
+            start = max(0.0, best_ts - half)
+            end = min(duration_seconds, best_ts + half)
+            if end - start >= 1.0:
+                temp_clip_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+                try:
+                    subprocess.run([
+                        'ffmpeg', '-y', '-ss', f'{start:.3f}', '-to', f'{end:.3f}',
+                        '-i', output_path,
+                        '-c:v', 'libx264', '-preset', 'fast',
+                        '-crf', '23', '-pix_fmt', 'yuv420p',
+                        '-movflags', '+faststart', '-an',
+                        temp_clip_path
+                    ], capture_output=True, check=True)
+                    with open(temp_clip_path, "rb") as clip_f:
+                        clip_base64 = base64.b64encode(clip_f.read()).decode("utf-8")
+                    accident_clip = {
+                        "clip_base64": clip_base64,
+                        "start": round(start, 3),
+                        "end": round(end, 3),
+                        "duration": round(end - start, 3),
+                        "best_timestamp": round(best_ts, 3)
+                    }
+                except Exception as e:
+                    print(f"Accident clip error: {e}")
+                finally:
+                    try:
+                        os.unlink(temp_clip_path)
+                    except Exception:
+                        pass
+
         # Read output video and encode
         with open(output_path, "rb") as f:
             video_data = base64.b64encode(f.read()).decode("utf-8")
@@ -360,12 +463,19 @@ async def detect_video(
         os.unlink(video_path)
         os.unlink(output_path)
         
+        if accident is not None:
+            accident["dataset"] = _active_dataset
+
         return {
             "success": True,
             "model_used": model_to_use,
             "video_base64": video_data,
             "video_info": result["video_info"],
-            "statistics": result["statistics"]
+            "statistics": result["statistics"],
+            "accident": accident,
+            "accident_timeline": result.get("accident_timeline"),
+            "accident_peaks": result.get("accident_peaks"),
+            "accident_clip": accident_clip
         }
     
     except Exception as e:

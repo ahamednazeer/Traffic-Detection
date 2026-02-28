@@ -3,7 +3,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import ModelSelector from '@/components/ModelSelector';
 import DetectionStatsPanel from '@/components/DetectionStats';
-import type { DetectionStats } from '@/lib/api';
+import AccidentStatus from '@/components/AccidentStatus';
+import type { DetectionStats, AccidentResult } from '@/lib/api';
 import {
     Camera,
     Play,
@@ -16,6 +17,7 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
 export default function CameraDetectionPage() {
     const [isStreaming, setIsStreaming] = useState(false);
     const [stats, setStats] = useState<DetectionStats | null>(null);
+    const [accident, setAccident] = useState<AccidentResult | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [fps, setFps] = useState(0);
 
@@ -89,9 +91,12 @@ export default function CameraDetectionPage() {
                 }
 
                 // Update stats
-                if (data.stats) {
-                    setStats(data.stats);
-                }
+                    if (data.stats) {
+                        setStats(data.stats);
+                    }
+                    if (data.accident) {
+                        setAccident(data.accident);
+                    }
 
                 // Calculate FPS
                 frameCountRef.current++;
@@ -180,6 +185,7 @@ export default function CameraDetectionPage() {
 
         // Reset stats
         setStats(null);
+        setAccident(null);
         setFps(0);
     }, [stopCamera]);
 
@@ -204,10 +210,10 @@ export default function CameraDetectionPage() {
             <div className="flex items-center justify-between">
                 <div>
                     <h1 className="font-chivo font-bold text-2xl uppercase tracking-wider">
-                        Live Camera Detection
+                        Live Accident Detection
                     </h1>
                     <p className="text-slate-400 text-sm mt-1">
-                        Real-time detection from your webcam
+                        Real-time accident detection from your webcam
                     </p>
                 </div>
                 <div className="flex items-center gap-4">
@@ -252,6 +258,7 @@ export default function CameraDetectionPage() {
                     )}
 
                     {/* Stats */}
+                    <AccidentStatus accident={accident} />
                     <DetectionStatsPanel stats={stats} />
                 </div>
 
