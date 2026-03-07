@@ -11,7 +11,29 @@ YOLO_MODEL_PATH = MODELS_DIR / "best.pt"
 SSD_MODEL_PATH = MODELS_DIR / "ssd300_vgg16_coco.pth"
 TRAFFIC_SIGN_MODEL_PATH = MODELS_DIR / "traffic_sign.pt"
 ACCIDENT_MODEL_PATH = MODELS_DIR / "accident_train" / "weights" / "best.pt"
-ACCIDENT_MODEL_URL = "backend/models"
+ACCIDENT_MODEL_URL = ""
+
+
+def _load_env_file(env_path: Path) -> None:
+    """Load simple KEY=VALUE pairs from a local .env file."""
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+# Load backend-local env first, then project-root fallback.
+_load_env_file(BASE_DIR / ".env")
+_load_env_file(BASE_DIR.parent / ".env")
 
 # Ensure models directory exists
 MODELS_DIR.mkdir(exist_ok=True)
@@ -92,6 +114,23 @@ SSD_TRAFFIC_CLASSES = {
 # API Settings
 API_PREFIX = "/api"
 CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+# Email Notification Settings
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", os.getenv("SMTP_USER", "")).strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+# Gmail app passwords are shown grouped with spaces; normalize for SMTP auth.
+if "gmail.com" in SMTP_HOST.lower():
+    SMTP_PASSWORD = SMTP_PASSWORD.replace(" ", "")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USERNAME)
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Traffic Detection System")
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+ALERT_EMAIL_ENABLED = os.getenv("ALERT_EMAIL_ENABLED", "true").lower() == "true"
+ALERT_RECIPIENT_EMAIL = os.getenv(
+    "ALERT_RECIPIENT_EMAIL",
+    os.getenv("NOTIFY_EMAIL", os.getenv("USER_EMAIL", ""))
+).strip()
 
 # Video Processing
 MAX_VIDEO_SIZE_MB = 100

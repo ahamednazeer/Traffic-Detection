@@ -50,6 +50,13 @@ export interface AccidentClip {
   best_timestamp: number;
 }
 
+export interface EmailNotificationResult {
+  enabled: boolean;
+  recipient?: string | null;
+  status: string;
+  reason?: string;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
@@ -92,6 +99,7 @@ export interface VideoDetectionResponse {
   accident_timeline?: AccidentTimelineEntry[];
   accident_peaks?: AccidentTimelineEntry[];
   accident_clip?: AccidentClip;
+  email_notification?: EmailNotificationResult;
 }
 
 export interface ModelsResponse {

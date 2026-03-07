@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from detectors import YOLODetector, YOLOCocoDetector, SSDDetector, BaseDetector, TrafficSignDetector, AccidentYOLODetector
 from processors.image_processor import ImageProcessor
 from processors.video_processor import VideoProcessor
-from config.settings import CLASS_COLORS, CLASS_NAMES
+from config.settings import CLASS_COLORS, CLASS_NAMES, ALERT_RECIPIENT_EMAIL
 from utils.accident import summarize_accident_from_detections
 
 
@@ -184,7 +184,12 @@ def merge_detections(det1: list, det2: list, iou_threshold: float = 0.5) -> list
 @router.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "active_model": _active_model, "active_dataset": _active_dataset}
+    return {
+        "status": "healthy",
+        "active_model": _active_model,
+        "active_dataset": _active_dataset,
+        "default_notify_email": ALERT_RECIPIENT_EMAIL or None
+    }
 
 
 @router.get("/models")

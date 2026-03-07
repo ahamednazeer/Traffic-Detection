@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import ModelSelector from '@/components/ModelSelector';
 import DetectionStatsPanel from '@/components/DetectionStats';
 import AccidentStatus from '@/components/AccidentStatus';
@@ -33,8 +33,11 @@ export default function VideoDetectionPage() {
     const [livePreview, setLivePreview] = useState(true);
     const [previewFps, setPreviewFps] = useState(10);
     const [clipSeconds, setClipSeconds] = useState(8);
+    const [emailNotifications, setEmailNotifications] = useState(false);
+    const [notifyEmail, setNotifyEmail] = useState('');
+    const [defaultNotifyEmail, setDefaultNotifyEmail] = useState('');
+    const [emailStatus, setEmailStatus] = useState<{ status: string; reason?: string; recipient?: string | null } | null>(null);
     const [previewFpsActual, setPreviewFpsActual] = useState(0);
-    const [jobId, setJobId] = useState<string | null>(null);
     const [progress, setProgress] = useState(0);
     const [progressStatus, setProgressStatus] = useState<string | null>(null);
     const [videoInfo, setVideoInfo] = useState<any>(null);
@@ -47,6 +50,31 @@ export default function VideoDetectionPage() {
     const pollRef = useRef<number | null>(null);
     const jobIdRef = useRef<string | null>(null);
     const progressRef = useRef(0);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadDefaultNotifyEmail = async () => {
+            try {
+                const res = await fetch(`${API_URL}/api/health`);
+                if (!res.ok) return;
+                const data = await res.json();
+                const envEmail = typeof data?.default_notify_email === 'string'
+                    ? data.default_notify_email.trim()
+                    : '';
+                if (!envEmail || cancelled) return;
+                setDefaultNotifyEmail(envEmail);
+                setNotifyEmail((prev) => (prev.trim() ? prev : envEmail));
+            } catch {
+                // ignore config lookup errors
+            }
+        };
+
+        loadDefaultNotifyEmail();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -62,6 +90,7 @@ export default function VideoDetectionPage() {
             setAccidentTimeline([]);
             setAccidentPeaks([]);
             setAccidentClip(null);
+            setEmailStatus(null);
         }
     };
 
@@ -77,7 +106,7 @@ export default function VideoDetectionPage() {
         setAccidentTimeline([]);
         setAccidentPeaks([]);
         setAccidentClip(null);
-        setJobId(null);
+        setEmailStatus(null);
         jobIdRef.current = null;
         progressRef.current = 0;
         if (pollRef.current) {
@@ -94,7 +123,6 @@ export default function VideoDetectionPage() {
             const newJobId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
                 ? crypto.randomUUID()
                 : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-            setJobId(newJobId);
             jobIdRef.current = newJobId;
 
             ws.onopen = async () => {
@@ -110,7 +138,10 @@ export default function VideoDetectionPage() {
                     preview: livePreview,
                     preview_fps: previewFps,
                     preview_width: 640,
-                    clip_seconds: clipSeconds
+                    clip_seconds: clipSeconds,
+                    email_notifications: emailNotifications,
+                    notify_email: (notifyEmail.trim() || defaultNotifyEmail).trim(),
+                    filename: selectedFile.name
                 }));
             };
 
@@ -129,7 +160,6 @@ export default function VideoDetectionPage() {
 
                 if (data.type === 'ready') {
                     if (data.job_id) {
-                        setJobId(data.job_id);
                         jobIdRef.current = data.job_id;
                         if (pollRef.current) {
                             window.clearInterval(pollRef.current);
@@ -213,11 +243,13 @@ export default function VideoDetectionPage() {
                     } else {
                         setAccidentClip(null);
                     }
+                    setEmailStatus(data.email_notification || null);
                     setVideoInfo(data.video_info);
                     setProgress(100);
                     setProgressStatus('Complete!');
                     setPreviewFrame(null);
                     setLoading(false);
+                    setError(null);
                     progressRef.current = 100;
                     if (pollRef.current) {
                         window.clearInterval(pollRef.current);
@@ -318,11 +350,13 @@ export default function VideoDetectionPage() {
                 } else {
                     setAccidentClip(null);
                 }
+                setEmailStatus(result.email_notification || job.email_notification || null);
                 setVideoInfo(result.video_info);
                 setProgress(100);
                 setProgressStatus('Complete!');
                 setPreviewFrame(null);
                 setLoading(false);
+                setError(null);
                 if (pollRef.current) {
                     window.clearInterval(pollRef.current);
                     pollRef.current = null;
@@ -379,7 +413,14 @@ export default function VideoDetectionPage() {
         resultVideoRef.current.play();
     };
 
+    const formatEmailReason = (reason?: string) => {
+        if (!reason) return 'n/a';
+        return reason.replace(/_/g, ' ');
+    };
+
     const accidentThreshold = accident?.threshold ?? 0.5;
+    const effectiveNotifyEmail = (notifyEmail.trim() || defaultNotifyEmail).trim();
+    const emailMissing = emailNotifications && effectiveNotifyEmail.length === 0;
 
     return (
         <div className="space-y-6 animate-slide-up">
@@ -492,6 +533,44 @@ export default function VideoDetectionPage() {
                         </div>
                     </div>
 
+                    {/* Email Notification */}
+                    <div className="card">
+                        <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
+                            Email Notification
+                        </h3>
+                        <label className="flex items-center justify-between text-sm text-slate-300">
+                            <span>Send one alert email if accident is detected</span>
+                            <input
+                                type="checkbox"
+                                checked={emailNotifications}
+                                onChange={(e) => setEmailNotifications(e.target.checked)}
+                                disabled={loading}
+                                className="h-4 w-4 accent-blue-500"
+                            />
+                        </label>
+                        <input
+                            type="email"
+                            value={notifyEmail}
+                            onChange={(e) => setNotifyEmail(e.target.value)}
+                            placeholder={defaultNotifyEmail || 'ops@company.com'}
+                            disabled={loading || !emailNotifications}
+                            className="mt-3 w-full rounded-sm border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                        />
+                        {defaultNotifyEmail && (
+                            <p className="mt-2 text-xs text-blue-400">
+                                Default recipient from backend env: {defaultNotifyEmail}
+                            </p>
+                        )}
+                        <p className="mt-2 text-xs text-slate-500">
+                            Requires SMTP env vars in backend (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`).
+                        </p>
+                        {emailMissing && (
+                            <p className="mt-2 text-xs text-red-400">
+                                Enter recipient email to enable notifications.
+                            </p>
+                        )}
+                    </div>
+
                     {/* Upload */}
                     <div className="card">
                         <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
@@ -524,7 +603,7 @@ export default function VideoDetectionPage() {
                     <div className="flex gap-2">
                         <button
                             onClick={handleProcess}
-                            disabled={!selectedFile || loading}
+                            disabled={!selectedFile || loading || emailMissing}
                             className="btn-primary flex-1 flex items-center justify-center gap-2"
                         >
                             {loading ? (
@@ -567,6 +646,30 @@ export default function VideoDetectionPage() {
                                 <p><span className="text-slate-500">FPS:</span> {videoInfo.fps}</p>
                                 <p><span className="text-slate-500">Frames:</span> {videoInfo.total_frames}</p>
                                 <p><span className="text-slate-500">Processed:</span> {videoInfo.processed_frames}</p>
+                            </div>
+                        </div>
+                    )}
+
+                    {emailStatus && (
+                        <div className="card">
+                            <h3 className="text-sm font-mono text-slate-400 uppercase tracking-wider mb-3">
+                                Email Notification
+                            </h3>
+                            <div className="space-y-1 text-sm">
+                                <p>
+                                    <span className="text-slate-500">Status:</span>{' '}
+                                    <span className={emailStatus.status === 'sent' ? 'text-green-400' : emailStatus.status === 'failed' ? 'text-red-400' : 'text-slate-300'}>
+                                        {emailStatus.status}
+                                    </span>
+                                </p>
+                                <p>
+                                    <span className="text-slate-500">Reason:</span> {formatEmailReason(emailStatus.reason)}
+                                </p>
+                                {emailStatus.recipient && (
+                                    <p>
+                                        <span className="text-slate-500">Recipient:</span> {emailStatus.recipient}
+                                    </p>
+                                )}
                             </div>
                         </div>
                     )}

@@ -38,6 +38,9 @@ RUN apt-get update && apt-get install -y \
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 
+COPY models/ ./models/
+COPY *.pt ./
+
 # Copy application code
 COPY . .
 

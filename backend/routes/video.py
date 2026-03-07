@@ -18,10 +18,64 @@ from starlette.websockets import WebSocketState
 from detectors import YOLODetector, YOLOCocoDetector, AccidentYOLODetector
 from detectors.base_detector import Detection
 from processors.image_processor import ImageProcessor
+from config.settings import ALERT_RECIPIENT_EMAIL
 from utils.accident import summarize_accident_from_detections, select_top_accident_peaks
+from utils.email_notifier import send_accident_email, is_valid_email
 
 router = APIRouter(prefix="/api", tags=["video"])
 VIDEO_JOBS = {}
+
+
+def _format_video_timestamp(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    mins = int(seconds // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds - int(seconds)) * 1000)
+    return f"{mins:02d}:{secs:02d}.{millis:03d}"
+
+
+def _build_timestamped_snapshot(
+    frame: np.ndarray,
+    event_seconds: float,
+    score: float,
+    threshold: float,
+    class_name: Optional[str]
+) -> Optional[bytes]:
+    if frame is None:
+        return None
+
+    snapshot = frame.copy()
+    h, w = snapshot.shape[:2]
+    pad = max(6, int(min(w, h) * 0.012))
+    bar_h = max(28, int(h * 0.085))
+    y1, y2 = pad, pad + bar_h
+
+    # Compact stamp so it doesn't dominate low-resolution CCTV frames.
+    stamp = (
+        f"ACCIDENT  T+{_format_video_timestamp(event_seconds)}  "
+        f"SCORE {score * 100:.1f}%  THR {threshold * 100:.1f}%"
+    )
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.38, min(0.56, h / 900.0))
+    thickness = 1 if h < 600 else 2
+    max_text_width = w - (pad * 4)
+    (text_w, text_h), _ = cv2.getTextSize(stamp, font, font_scale, thickness)
+    while text_w > max_text_width and font_scale > 0.34:
+        font_scale -= 0.02
+        (text_w, text_h), _ = cv2.getTextSize(stamp, font, font_scale, thickness)
+
+    text_x = pad + max(6, int(pad * 0.9))
+    text_y = y1 + (bar_h + text_h) // 2 - 2
+
+    cv2.rectangle(snapshot, (pad, y1), (w - pad, y2), (5, 10, 28), -1)
+    cv2.rectangle(snapshot, (pad, y1), (w - pad, y2), (35, 90, 200), 1)
+    cv2.putText(snapshot, stamp, (text_x, text_y), font, font_scale, (235, 245, 255), thickness, cv2.LINE_AA)
+
+    ok, buffer = cv2.imencode(".png", snapshot)
+    if not ok:
+        return None
+    return buffer.tobytes()
 
 
 @router.websocket("/video/process")
@@ -56,6 +110,13 @@ async def video_process_websocket(websocket: WebSocket):
         except (TypeError, ValueError):
             clip_seconds = 8.0
         clip_seconds = min(max(clip_seconds, 4.0), 20.0)
+        notify_email = (metadata.get("notify_email") or ALERT_RECIPIENT_EMAIL or "").strip()
+        raw_email_notifications = metadata.get("email_notifications", False)
+        if isinstance(raw_email_notifications, str):
+            email_notifications_enabled = raw_email_notifications.lower() in {"1", "true", "yes", "on"}
+        else:
+            email_notifications_enabled = bool(raw_email_notifications)
+        source_filename = (metadata.get("filename") or "uploaded_video.mp4").strip() or "uploaded_video.mp4"
         
         model_name = metadata.get("model", "accident_yolo11x") # Default to accident model
         job_id = metadata.get("job_id") or str(uuid.uuid4())
@@ -69,8 +130,16 @@ async def video_process_websocket(websocket: WebSocket):
             "total": 0,
             "preview": None,
             "result": None,
-            "error": None
+            "error": None,
+            "email_notification": {
+                "enabled": email_notifications_enabled,
+                "recipient": notify_email if notify_email else None,
+                "status": "pending"
+            },
+            "email_sent": False
         }
+        if email_notifications_enabled and notify_email and not is_valid_email(notify_email):
+            VIDEO_JOBS[job_id]["email_notification"]["status"] = "invalid_recipient"
         
         print(f"Video WebSocket: Receiving video ({total_size} bytes), Model: {model_name}")
         
@@ -196,6 +265,7 @@ async def video_process_websocket(websocket: WebSocket):
         best_accident_frame = None
         best_accident_bbox = None
         best_accident_class = None
+        best_accident_annotated_frame = None
         client_disconnected = False
         
         await websocket.send_json({"type": "status", "message": "Processing frames..."})
@@ -274,6 +344,7 @@ async def video_process_websocket(websocket: WebSocket):
                 best_accident_frame = frame_count
                 best_accident_bbox = accident.get("bbox")
                 best_accident_class = accident.get("class_name")
+                best_accident_annotated_frame = annotated.copy()
         
         cap.release()
         out.release()
@@ -380,6 +451,61 @@ async def video_process_websocket(websocket: WebSocket):
             "best_timestamp": (best_accident_frame / fps) if best_accident_frame and fps > 0 else None
         }
 
+        email_notification = {
+            "enabled": email_notifications_enabled,
+            "recipient": notify_email if notify_email else None,
+            "status": "skipped",
+            "reason": "not_requested"
+        }
+        if email_notifications_enabled:
+            if not notify_email:
+                email_notification["reason"] = "missing_recipient"
+            elif not is_valid_email(notify_email):
+                email_notification["status"] = "failed"
+                email_notification["reason"] = "invalid_recipient"
+            elif not accident_summary["detected"]:
+                email_notification["reason"] = "no_accident_detected"
+            elif VIDEO_JOBS[job_id]["email_sent"]:
+                email_notification["reason"] = "already_sent"
+            else:
+                snapshot_bytes = _build_timestamped_snapshot(
+                    best_accident_annotated_frame,
+                    accident_summary["best_timestamp"] or 0.0,
+                    best_accident_score,
+                    effective_confidence,
+                    best_accident_class
+                )
+                if snapshot_bytes is None:
+                    email_notification["status"] = "failed"
+                    email_notification["reason"] = "snapshot_generation_failed"
+                else:
+                    try:
+                        send_result = send_accident_email(
+                            recipient=notify_email,
+                            payload={
+                                "job_id": job_id,
+                                "file_name": source_filename,
+                                "model_name": model_name,
+                                "best_timestamp": accident_summary.get("best_timestamp"),
+                                "score": best_accident_score,
+                                "threshold": effective_confidence,
+                                "class_name": best_accident_class,
+                            },
+                            snapshot_png=snapshot_bytes
+                        )
+                        if send_result.get("sent") == "true":
+                            email_notification["status"] = "sent"
+                            email_notification["reason"] = "ok"
+                            VIDEO_JOBS[job_id]["email_sent"] = True
+                        else:
+                            email_notification["status"] = "failed"
+                            email_notification["reason"] = send_result.get("reason", "send_failed")
+                    except Exception as email_error:
+                        email_notification["status"] = "failed"
+                        email_notification["reason"] = str(email_error)
+
+        VIDEO_JOBS[job_id]["email_notification"] = email_notification
+
         VIDEO_JOBS[job_id]["status"] = "complete"
         VIDEO_JOBS[job_id]["progress"] = 100
         VIDEO_JOBS[job_id]["result"] = {
@@ -396,7 +522,8 @@ async def video_process_websocket(websocket: WebSocket):
             "accident": accident_summary,
             "accident_timeline": accident_timeline,
             "accident_peaks": accident_peaks,
-            "accident_clip": accident_clip
+            "accident_clip": accident_clip,
+            "email_notification": email_notification
         }
 
         if not client_disconnected:
@@ -416,16 +543,22 @@ async def video_process_websocket(websocket: WebSocket):
                     "accident": accident_summary,
                     "accident_timeline": accident_timeline,
                     "accident_peaks": accident_peaks,
-                    "accident_clip": accident_clip
+                    "accident_clip": accident_clip,
+                    "email_notification": email_notification
                 })
             except Exception:
                 return
         
     except asyncio.TimeoutError:
         print("Video WebSocket: Timeout")
+        if "job_id" in locals():
+            VIDEO_JOBS[job_id]["status"] = "error"
+            VIDEO_JOBS[job_id]["error"] = "timeout_waiting_for_client_data"
         await websocket.send_json({"error": "Timeout waiting for data"})
     except WebSocketDisconnect:
         print("Video WebSocket: Client disconnected")
+        if "job_id" in locals() and VIDEO_JOBS.get(job_id, {}).get("status") == "processing":
+            VIDEO_JOBS[job_id]["status"] = "disconnected"
     except Exception as e:
         print(f"Video WebSocket error: {e}")
         if "job_id" in locals():
