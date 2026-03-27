@@ -161,12 +161,12 @@ def send_accident_email(
 
     if SMTP_USE_TLS:
         context = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20, source_address=("0.0.0.0", 0)) as server:
             server.starttls(context=context)
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(SMTP_FROM_EMAIL, [recipient], message.as_string())
     else:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20, source_address=("0.0.0.0", 0)) as server:
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(SMTP_FROM_EMAIL, [recipient], message.as_string())
 
